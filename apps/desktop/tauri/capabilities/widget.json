@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "widget",
+  "description": "Capability for the always-visible timer widget",
+  "windows": ["widget"],
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
+}

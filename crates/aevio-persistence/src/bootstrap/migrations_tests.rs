@@ -1,0 +1,1281 @@
+use super::*;
+
+#[test]
+fn schema_version_is_where_migrations_end() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+    let version: i32 = conn
+        .query_row("PRAGMA user_version;", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+}
+
+#[test]
+fn plugin_storage_device_namespace_migration_preserves_existing_values() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+    conn.execute(
+        "INSERT INTO plugin_installations
+         (id, plugin_id, publisher_id, version, scope, state, manifest_json, artifact_digest,
+          created_at, updated_at)
+         VALUES ('install', 'dev.example', 'publisher', '1.0.0', 'personal', 'installed', '{}', 'digest', 1, 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO plugin_storage_entries
+         (id, installation_id, user_ref, workspace_ref, device_ref, key, value_json,
+          schema_version, size_bytes, updated_at)
+         VALUES ('entry', 'install', 'local-user', 'personal', 'legacy-device', 'key', '{\"ok\":true}', 1, 11, 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute("PRAGMA user_version = 34", []).unwrap();
+    run_migrations(&mut conn).unwrap();
+    let value: (String, String) = conn
+        .query_row(
+            "SELECT value_json, device_ref FROM plugin_storage_entries WHERE id = 'entry'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(value, ("{\"ok\":true}".into(), "legacy-device".into()));
+}
+
+#[test]
+fn plugin_event_delivery_tables_are_added_additively() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+    conn.execute("PRAGMA user_version = 36", []).unwrap();
+    run_migrations(&mut conn).unwrap();
+    let version: i32 = conn
+        .query_row("PRAGMA user_version;", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+    for table in [
+        "plugin_events",
+        "plugin_event_deliveries",
+        "plugin_update_policies",
+    ] {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "missing {table}");
+    }
+}
+
+#[test]
+fn music_file_path_is_added_without_replacing_existing_tracks() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+    conn.execute(
+        "INSERT INTO music_tracks (id, title, description, kind, sort_order, created_at)
+         VALUES ('track', 'Track', 'Description', 'generated', 1, 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute("PRAGMA user_version = 38", []).unwrap();
+    run_migrations(&mut conn).unwrap();
+    let path: Option<String> = conn
+        .query_row(
+            "SELECT file_path FROM music_tracks WHERE id = 'track'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(path, None);
+}
+
+#[test]
+fn timer_tables_are_added_without_replacing_existing_rows() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO settings(key, value) VALUES ('timer_next_id', '8');
+         PRAGMA user_version = 27;",
+    )
+    .unwrap();
+
+    run_migrations(&mut conn).unwrap();
+
+    let value: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'timer_next_id';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, "8");
+    for table in ["timers", "timer_segments"] {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1;",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "missing {table}");
+    }
+}
+
+/// A structural fingerprint of tables, columns, indexes, and triggers.
+/// Columns are unordered because the old ladder's `ALTER TABLE ADD COLUMN`
+/// statements append them; `sqlite_master.sql` would report that harmless
+/// difference despite equivalent table definitions.
+fn schema_snapshot(conn: &Connection) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    let mut tables_stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master
+                 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name;",
+        )
+        .unwrap();
+    let table_names: Vec<String> = tables_stmt
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+
+    for table in &table_names {
+        let mut cols_stmt = conn
+            .prepare(&format!("PRAGMA table_info({table});"))
+            .unwrap();
+        let mut cols: Vec<String> = cols_stmt
+            .query_map([], |row| {
+                let name: String = row.get(1)?;
+                let ty: String = row.get(2)?;
+                let notnull: i64 = row.get(3)?;
+                let dflt: Option<String> = row.get(4)?;
+                let pk: i64 = row.get(5)?;
+                Ok(format!("{name}:{ty}:{notnull}:{dflt:?}:{pk}"))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        cols.sort();
+        lines.push(format!("TABLE {table} COLUMNS [{}]", cols.join(", ")));
+
+        let mut idx_stmt = conn
+            .prepare(&format!("PRAGMA index_list({table});"))
+            .unwrap();
+        let indexes: Vec<(String, i64, i64)> = idx_stmt
+            .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(4)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let mut idx_lines: Vec<String> = indexes
+            .into_iter()
+            .map(|(idx_name, unique, partial)| {
+                let mut info_stmt = conn
+                    .prepare(&format!("PRAGMA index_info({idx_name});"))
+                    .unwrap();
+                let cols: Vec<String> = info_stmt
+                    .query_map([], |row| row.get::<_, String>(2))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap();
+                format!(
+                    "{idx_name}: unique={unique} partial={partial} cols=[{}]",
+                    cols.join(",")
+                )
+            })
+            .collect();
+        idx_lines.sort();
+        lines.push(format!("TABLE {table} INDEXES [{}]", idx_lines.join(", ")));
+    }
+
+    let mut triggers_stmt = conn
+        .prepare(
+            "SELECT name, sql FROM sqlite_master
+                 WHERE type = 'trigger'
+                 ORDER BY name;",
+        )
+        .unwrap();
+    let mut triggers: Vec<String> = triggers_stmt
+        .query_map([], |row| {
+            let name: String = row.get(0)?;
+            let sql: String = row.get(1)?;
+            let normalized = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+            Ok(format!("{name}: {normalized}"))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    triggers.sort();
+    lines.extend(triggers);
+
+    let mut virtual_tables_stmt = conn
+        .prepare(
+            "SELECT name, sql FROM sqlite_master
+                 WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'
+                 ORDER BY name;",
+        )
+        .unwrap();
+    let mut virtual_tables: Vec<String> = virtual_tables_stmt
+        .query_map([], |row| {
+            let name: String = row.get(0)?;
+            let sql: String = row.get(1)?;
+            let normalized = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+            Ok(format!("{name}: {normalized}"))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    virtual_tables.sort();
+    lines.extend(virtual_tables);
+
+    lines
+}
+
+#[test]
+fn migrations_run_cleanly_on_fresh_db() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    let v: i32 = conn
+        .query_row("PRAGMA user_version;", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+
+    let cat_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM categories;", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(cat_count, 11);
+
+    conn.execute(
+        "SELECT id, sampled_at, power_watts FROM energy_samples LIMIT 1;",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn fresh_schema_matches_legacy_schema_upgraded_to_latest() {
+    let mut fresh = Connection::open_in_memory().unwrap();
+    run_migrations(&mut fresh).unwrap();
+
+    let mut legacy = Connection::open_in_memory().unwrap();
+    legacy_v1_through_v7::run(&mut legacy).unwrap();
+
+    let v: i32 = legacy
+        .query_row("PRAGMA user_version;", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 7);
+    // The shipped pre-invoice schema is equivalent to legacy v7, but its
+    // user_version was reset to 1. Reproduce an upgrade of that install.
+    legacy.execute_batch("PRAGMA user_version = 1;").unwrap();
+    run_migrations(&mut legacy).unwrap();
+    assert_eq!(schema_snapshot(&fresh), schema_snapshot(&legacy));
+}
+
+/// The invoice tables and time-protection trigger exactly as main's v2 and
+/// v3 steps leave them (the state of a shipped install at user_version 4).
+const SHIPPED_V4_INVOICES: &str = "
+        CREATE TABLE invoices (
+          id TEXT PRIMARY KEY, client_id TEXT NOT NULL, client_name TEXT NOT NULL,
+          client_email TEXT, client_address TEXT, currency TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('draft', 'sent', 'paid')),
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        CREATE TABLE invoice_lines (
+          entry_id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id),
+          project_name TEXT NOT NULL, description TEXT NOT NULL, started_at INTEGER NOT NULL,
+          ended_at INTEGER NOT NULL, rate REAL NOT NULL, amount_cents INTEGER NOT NULL);
+        CREATE INDEX idx_invoice_lines_invoice ON invoice_lines(invoice_id);
+        CREATE TRIGGER protect_invoiced_time BEFORE UPDATE OF started_at, ended_at, description, project_id, status, billable, deleted_at ON time_entries
+        WHEN OLD.invoice_id IS NOT NULL AND (
+          NEW.started_at IS NOT OLD.started_at OR NEW.ended_at IS NOT OLD.ended_at OR
+          NEW.description IS NOT OLD.description OR
+          (NEW.project_id IS NOT OLD.project_id AND NOT (
+            NEW.project_id IS NULL AND EXISTS (
+              SELECT 1 FROM projects WHERE id = OLD.project_id AND deleted_at IS NOT NULL
+            )
+          )) OR
+          NEW.status IS NOT OLD.status OR NEW.billable IS NOT OLD.billable OR NEW.deleted_at IS NOT OLD.deleted_at
+        ) BEGIN SELECT RAISE(ABORT, 'Invoiced time cannot be edited; delete its draft invoice first'); END;";
+
+/// A database as main ships it at user_version 4: the full pre-invoice
+/// schema, the old invoice tables, and tracked data of every kind,
+/// including time reserved by a USD draft and by a sent invoice.
+fn shipped_v4_database() -> Connection {
+    let mut conn = Connection::open_in_memory().unwrap();
+    legacy_v1_through_v7::run(&mut conn).unwrap();
+    conn.execute_batch(SHIPPED_V4_INVOICES).unwrap();
+    conn.execute_batch(
+            "INSERT INTO clients (id, name, created_at, updated_at) VALUES ('c', 'Acme', 1, 1);
+             INSERT INTO projects (id, client_id, name, color, created_at, updated_at)
+               VALUES ('p', 'c', 'Swap', '#fff', 1, 1);
+             INSERT INTO segments (app, title, kind, started_at) VALUES ('Code', 'main.rs', 'activity', 5);
+             INSERT INTO time_entries (id, started_at, ended_at, description, project_id, status, billable, invoice_id, created_at, updated_at)
+               VALUES ('e-draft', 0, 1000000, 'Draft work', 'p', 'approved', 1, 'draft-usd', 1, 1);
+             INSERT INTO time_entries (id, started_at, ended_at, description, project_id, status, billable, invoice_id, created_at, updated_at)
+               VALUES ('e-sent', 0, 3600000, 'Sent work', 'p', 'approved', 1, 'sent', 1, 1);
+             INSERT INTO time_entries (id, started_at, ended_at, description, project_id, status, billable, created_at, updated_at)
+               VALUES ('e-free', 0, 60000, 'Untouched', 'p', 'pending', 0, 1, 1);
+             INSERT INTO invoices VALUES ('draft-usd', 'c', 'Acme', 'a@x.test', '1 Main', 'USD', 'draft', 86400000, 86400000);
+             INSERT INTO invoices VALUES ('draft-eur', 'c', 'Acme', NULL, NULL, 'EUR', 'draft', 86400000, 86400000);
+             INSERT INTO invoices VALUES ('sent', 'c', 'Acme', NULL, NULL, 'USD', 'sent', 86400000, 86400000);
+             INSERT INTO invoices VALUES ('paid', 'c', 'Acme', NULL, NULL, 'USD', 'paid', 86400000, 86400000);
+             INSERT INTO invoice_lines VALUES ('e-draft', 'draft-usd', 'Swap', 'Draft work', 0, 1000000, 100.0, 2778);
+             INSERT INTO invoice_lines VALUES ('e-sent', 'sent', 'Swap', 'Sent work', 0, 3600000, 100.5, 10050);
+             PRAGMA user_version = 4;",
+        )
+        .unwrap();
+    conn
+}
+
+/// Everything the upgrade must leave exactly as it found it, and what the
+/// invoice steps must do: only the USD draft survives, still holding its
+/// time; the deleted invoices release theirs.
+fn assert_upgraded_in_place(conn: &Connection) {
+    let mut fresh = Connection::open_in_memory().unwrap();
+    run_migrations(&mut fresh).unwrap();
+    assert_eq!(schema_snapshot(&fresh), schema_snapshot(conn));
+
+    let v: i32 = conn
+        .query_row("PRAGMA user_version;", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM invoices ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ids, ["draft-usd"]);
+    let entries: Vec<(String, Option<String>, String, String)> = conn
+        .prepare("SELECT id, invoice_id, description, status FROM time_entries ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        entries,
+        [
+            (
+                "e-draft".into(),
+                Some("draft-usd".into()),
+                "Draft work".into(),
+                "approved".into()
+            ),
+            ("e-free".into(), None, "Untouched".into(), "pending".into()),
+            ("e-sent".into(), None, "Sent work".into(), "approved".into()),
+        ]
+    );
+    let other: (i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM segments), (SELECT COUNT(*) FROM clients),
+                        (SELECT COUNT(*) FROM projects), (SELECT COUNT(*) FROM categories)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(other, (1, 1, 1, 11));
+    // The draft's line survived, and invoiced time is still protected.
+    let lines: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM invoice_lines WHERE entry_id = 'e-draft'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(lines, 1);
+    assert!(
+        conn.execute(
+            "UPDATE time_entries SET description = 'x' WHERE id = 'e-draft'",
+            []
+        )
+        .is_err()
+    );
+}
+
+/// A shipped install at user_version 4 upgrades in place to the schema a
+/// new install gets, without touching anything it tracked.
+#[test]
+fn a_shipped_v4_database_upgrades_in_place_to_the_current_schema() {
+    let mut conn = shipped_v4_database();
+    run_migrations(&mut conn).unwrap();
+    assert_upgraded_in_place(&conn);
+}
+
+/// The same for a database that already ran the v5 step (which kept legacy
+/// rows and has no From columns): v6 deletes the legacy rows, adds the
+/// columns, and backfills drafts from the current settings.
+#[test]
+fn a_v5_database_upgrades_in_place_to_the_current_schema() {
+    let mut conn = shipped_v4_database();
+    conn.execute_batch(INVOICE_DOCUMENTS_V5).unwrap();
+    conn.execute_batch(
+        "UPDATE invoice_profile SET name = 'Offline Studios', address = '1 Main St.',
+                                        email = 'hi@offline.test' WHERE id = 1;
+             PRAGMA user_version = 5;",
+    )
+    .unwrap();
+    let legacy_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM invoices WHERE legacy = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(legacy_before, 3);
+
+    run_migrations(&mut conn).unwrap();
+    assert_upgraded_in_place(&conn);
+    let from: (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT from_name, from_address, from_email FROM invoices WHERE id = 'draft-usd'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        from,
+        (
+            "Offline Studios".into(),
+            "1 Main St.".into(),
+            Some("hi@offline.test".into())
+        )
+    );
+}
+
+/// The v2 invoice tables as shipped, with one row of every kind.
+#[test]
+fn v5_upgrades_usd_drafts_and_v6_deletes_the_rest() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+            "CREATE TABLE time_entries (id TEXT PRIMARY KEY, invoice_id TEXT, source TEXT NOT NULL DEFAULT 'auto');
+             CREATE TABLE segments (entry_id TEXT);
+             CREATE TABLE suggestions (entry_id TEXT);
+             CREATE TABLE entry_events (entry_id TEXT);
+             CREATE TABLE entry_embeddings (entry_id TEXT);
+             CREATE TABLE classify_jobs (entry_id TEXT);
+             CREATE TABLE clients (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE invoices (
+               id TEXT PRIMARY KEY, client_id TEXT NOT NULL, client_name TEXT NOT NULL,
+               client_email TEXT, client_address TEXT, currency TEXT NOT NULL,
+               status TEXT NOT NULL CHECK (status IN ('draft', 'sent', 'paid')),
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE invoice_lines (
+               entry_id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id),
+               project_name TEXT NOT NULL, description TEXT NOT NULL, started_at INTEGER NOT NULL,
+               ended_at INTEGER NOT NULL, rate REAL NOT NULL, amount_cents INTEGER NOT NULL);
+             INSERT INTO invoices VALUES ('draft-usd', 'c', 'Acme', 'a@x.test', '1 Main', 'USD', 'draft', 86400000, 86400000);
+             INSERT INTO invoices VALUES ('draft-eur', 'c', 'Acme', NULL, NULL, 'EUR', 'draft', 86400000, 86400000);
+             INSERT INTO invoices VALUES ('sent', 'c', 'Acme', NULL, NULL, 'USD', 'sent', 86400000, 86400000);
+             INSERT INTO invoices VALUES ('paid', 'c', 'Acme', NULL, NULL, 'USD', 'paid', 86400000, 86400000);
+             INSERT INTO invoice_lines VALUES ('e1', 'draft-usd', 'P', 'Work', 0, 1000000, 100.0, 2778);
+             INSERT INTO invoice_lines VALUES ('e2', 'sent', 'P', 'Work', 0, 3600000, 100.5, 10050);
+             INSERT INTO time_entries (id, invoice_id) VALUES ('e1', 'draft-usd');
+             INSERT INTO time_entries (id, invoice_id) VALUES ('e2', 'sent');
+             PRAGMA user_version = 4;",
+        )
+        .unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    // Only the USD draft survives; it stays editable and its amount now
+    // satisfies quantity x rate: 0.28 h (16m40s) x $100.00 = $28.00
+    // rather than the old exact $27.78.
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM invoices ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ids, ["draft-usd"]);
+    let (status, number, total, issue, due, terms): (
+        String,
+        Option<String>,
+        i64,
+        String,
+        String,
+        i64,
+    ) = conn
+        .query_row(
+            "SELECT status, number, total_cents, issue_date, due_date, terms_days
+                 FROM invoices WHERE id = 'draft-usd'",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!((status.as_str(), number, total), ("draft", None, 2800));
+    assert_eq!(terms, 30);
+    assert!(issue < due);
+    let (qty, rate, amount, kind): (i64, i64, i64, String) = conn
+            .query_row(
+                "SELECT quantity_hundredths, rate_cents, amount_cents, kind FROM invoice_lines WHERE entry_id = 'e1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+    assert_eq!(
+        (qty, rate, amount, kind.as_str()),
+        (28, 10_000, 2_800, "time")
+    );
+    let reserved = |entry: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT invoice_id FROM time_entries WHERE id = ?1",
+            [entry],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(reserved("e1").as_deref(), Some("draft-usd"));
+    assert_eq!(reserved("e2"), None);
+    let profile_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM invoice_profile", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(profile_rows, 1);
+    let v: i32 = conn
+        .query_row("PRAGMA user_version;", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+}
+
+/// A database the v5 migration already ran on (with `legacy` rows kept) loses
+/// them on the next launch; drafts and finalized invoices keep their From.
+#[test]
+fn v6_deletes_legacy_invoices_from_an_already_upgraded_database() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+            "CREATE TABLE time_entries (id TEXT PRIMARY KEY, invoice_id TEXT, source TEXT NOT NULL DEFAULT 'auto');
+             CREATE TABLE segments (entry_id TEXT);
+             CREATE TABLE suggestions (entry_id TEXT);
+             CREATE TABLE entry_events (entry_id TEXT);
+             CREATE TABLE entry_embeddings (entry_id TEXT);
+             CREATE TABLE classify_jobs (entry_id TEXT);
+             CREATE TABLE clients (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE invoices (
+               id TEXT PRIMARY KEY, client_id TEXT NOT NULL, client_name TEXT NOT NULL,
+               client_email TEXT, client_address TEXT, currency TEXT NOT NULL,
+               status TEXT NOT NULL CHECK (status IN ('draft', 'sent', 'paid')),
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE invoice_lines (
+               entry_id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id),
+               project_name TEXT NOT NULL, description TEXT NOT NULL, started_at INTEGER NOT NULL,
+               ended_at INTEGER NOT NULL, rate REAL NOT NULL, amount_cents INTEGER NOT NULL);",
+        )
+        .unwrap();
+    conn.execute_batch(INVOICE_DOCUMENTS_V5).unwrap();
+    conn.execute_batch(
+            "UPDATE invoice_profile SET name = 'Offline Studios', address = '1 Main St.',
+                                        email = 'hi@offline.test' WHERE id = 1;
+             INSERT INTO invoices (id, client_id, client_name, currency, status, legacy, created_at, updated_at)
+               VALUES ('old-sent', 'c', 'Acme', 'USD', 'open', 1, 1, 1);
+             INSERT INTO invoices (id, client_id, client_name, currency, status, legacy, created_at, updated_at)
+               VALUES ('old-eur', 'c', 'Acme', 'EUR', 'draft', 1, 1, 1);
+             INSERT INTO invoices (id, client_id, client_name, currency, status, legacy, issue_date, due_date,
+                                   terms_days, created_at, updated_at)
+               VALUES ('draft', 'c', 'Acme', 'USD', 'draft', 0, '2026-09-29', '2026-10-29', 30, 1, 1);
+             INSERT INTO invoices (id, client_id, client_name, currency, status, legacy, number, issuer_json,
+                                   issue_date, due_date, terms_days, created_at, updated_at)
+               VALUES ('issued', 'c', 'Acme', 'USD', 'open', 0, 'INV-2026-0001',
+                       '{\"name\":\"Old Name\",\"address\":\"9 Elm St.\",\"email\":null,\"phone\":\"555\"}',
+                       '2026-09-01', '2026-10-01', 30, 1, 1);
+             INSERT INTO invoice_lines (id, invoice_id, position, kind, entry_id, description, quantity_hundredths, rate_cents, amount_cents)
+               VALUES ('l1', 'old-sent', 0, 'time', 'e-old', 'Work', 100, 10000, 10000);
+             INSERT INTO invoice_lines (id, invoice_id, position, kind, entry_id, description, quantity_hundredths, rate_cents, amount_cents)
+               VALUES ('l2', 'draft', 0, 'time', 'e-draft', 'Work', 100, 10000, 10000);
+             INSERT INTO time_entries (id, invoice_id) VALUES ('e-old', 'old-sent');
+             INSERT INTO time_entries (id, invoice_id) VALUES ('e-draft', 'draft');
+             PRAGMA user_version = 5;",
+        )
+        .unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM invoices ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ids, ["draft", "issued"]);
+    let lines: Vec<String> = conn
+        .prepare("SELECT id FROM invoice_lines ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(lines, ["l2"]);
+    let reserved = |entry: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT invoice_id FROM time_entries WHERE id = ?1",
+            [entry],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(reserved("e-old"), None);
+    assert_eq!(reserved("e-draft").as_deref(), Some("draft"));
+    let has_legacy_column: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('invoices') WHERE name = 'legacy'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_legacy_column, 0);
+
+    let from = |id: &str| -> (String, String, Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT from_name, from_address, from_email, from_phone FROM invoices WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap()
+    };
+    // A draft starts from the current settings; a finalized invoice keeps
+    // the issuer it was issued under.
+    assert_eq!(
+        from("draft"),
+        (
+            "Offline Studios".into(),
+            "1 Main St.".into(),
+            Some("hi@offline.test".into()),
+            None
+        )
+    );
+    assert_eq!(
+        from("issued"),
+        (
+            "Old Name".into(),
+            "9 Elm St.".into(),
+            None,
+            Some("555".into())
+        )
+    );
+    let v: i32 = conn
+        .query_row("PRAGMA user_version;", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+}
+
+/// A database as v6 shipped it: the fresh schema without the client
+/// archive and notes columns, holding clients, projects, and tracked time.
+#[test]
+fn a_v6_database_upgrades_in_place_keeping_clients_projects_and_time() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+    conn.execute_batch(
+            "DROP TABLE breaks;
+             ALTER TABLE clients DROP COLUMN archived_at;
+             ALTER TABLE clients DROP COLUMN notes;
+             INSERT INTO clients (id, name, email, address, default_rate, currency, created_at, updated_at)
+               VALUES ('c1', 'Acme', 'a@x.test', '1 Main St.', 125.5, 'EUR', 10, 20);
+             INSERT INTO clients (id, name, created_at, updated_at, deleted_at)
+               VALUES ('c2', 'Gone', 10, 20, 30);
+             INSERT INTO projects (id, client_id, name, color, created_at, updated_at)
+               VALUES ('p1', 'c1', 'Swap', '#fff', 1, 1);
+             INSERT INTO time_entries (id, started_at, ended_at, description, project_id, status, billable, created_at, updated_at)
+               VALUES ('e1', 0, 3600000, 'Work', 'p1', 'approved', 1, 1, 1);
+             PRAGMA user_version = 6;",
+        )
+        .unwrap();
+    let clients_before = conn
+        .prepare("PRAGMA table_info(clients)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(!clients_before.iter().any(|name| name == "archived_at"));
+
+    run_migrations(&mut conn).unwrap();
+
+    let mut fresh = Connection::open_in_memory().unwrap();
+    run_migrations(&mut fresh).unwrap();
+    assert_eq!(schema_snapshot(&fresh), schema_snapshot(&conn));
+    let v: i32 = conn
+        .query_row("PRAGMA user_version;", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+
+    type Row = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<f64>,
+        Option<String>,
+    );
+    let clients: Vec<Row> = conn
+        .prepare("SELECT id, name, email, address, default_rate, currency FROM clients ORDER BY id")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        clients,
+        [
+            (
+                "c1".into(),
+                "Acme".into(),
+                Some("a@x.test".into()),
+                Some("1 Main St.".into()),
+                Some(125.5),
+                Some("EUR".into())
+            ),
+            ("c2".into(), "Gone".into(), None, None, None, None),
+        ]
+    );
+    // Nothing is archived by the upgrade, and the soft delete survives.
+    let flags: (i64, i64, Option<i64>) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM clients WHERE archived_at IS NOT NULL),
+                        (SELECT COUNT(*) FROM clients WHERE notes IS NOT NULL),
+                        (SELECT deleted_at FROM clients WHERE id = 'c2')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(flags, (0, 0, Some(30)));
+    let linked: (String, String, i64) = conn
+        .query_row(
+            "SELECT p.client_id, e.project_id, e.ended_at - e.started_at
+                 FROM projects p JOIN time_entries e ON e.project_id = p.id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(linked, ("c1".into(), "p1".into(), 3_600_000));
+}
+
+/// A database as v7 shipped it: the fresh schema without the `breaks`
+/// table, holding clients, projects, tracked time and an invoice.
+#[test]
+fn a_v7_database_upgrades_in_place_keeping_clients_projects_time_and_invoices() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+    conn.execute_batch(
+            "DROP TABLE breaks;
+             INSERT INTO clients (id, name, created_at, updated_at, archived_at, notes)
+               VALUES ('c1', 'Acme', 10, 20, 30, 'Net 15');
+             INSERT INTO projects (id, client_id, name, color, created_at, updated_at)
+               VALUES ('p1', 'c1', 'Swap', '#fff', 1, 1);
+             INSERT INTO segments (app, title, kind, label, started_at, ended_at)
+               VALUES ('Code', 'main.rs', 'activity', NULL, 100, 900);
+             INSERT INTO segments (app, title, kind, label, started_at, ended_at)
+               VALUES ('Idle', 'No activity', 'break', 'Idle', 900, 1500);
+             INSERT INTO time_entries (id, started_at, ended_at, description, project_id, status, billable, invoice_id, created_at, updated_at)
+               VALUES ('e1', 0, 3600000, 'Work', 'p1', 'approved', 1, 'inv1', 1, 1);
+             INSERT INTO invoices (id, client_id, client_name, currency, status, from_name, from_address, total_cents, created_at, updated_at)
+               VALUES ('inv1', 'c1', 'Acme', 'USD', 'draft', 'Me', '1 Main', 10000, 5, 5);
+             INSERT INTO invoice_lines (id, invoice_id, position, kind, entry_id, description, quantity_hundredths, rate_cents, amount_cents)
+               VALUES ('l1', 'inv1', 0, 'time', 'e1', 'Work', 100, 10000, 10000);
+             PRAGMA user_version = 7;",
+        )
+        .unwrap();
+    assert!(conn.prepare("SELECT id FROM breaks").is_err());
+
+    run_migrations(&mut conn).unwrap();
+
+    let v: i32 = conn
+        .query_row("PRAGMA user_version;", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+    let mut fresh = Connection::open_in_memory().unwrap();
+    run_migrations(&mut fresh).unwrap();
+    assert_eq!(schema_snapshot(&fresh), schema_snapshot(&conn));
+
+    // The new table starts empty and accepts a decision linked to a segment.
+    let breaks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM breaks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(breaks, 0);
+    conn.execute(
+        "INSERT INTO breaks (id, source, planned_ms, status, segment_id, created_at, updated_at)
+             VALUES ('b1', 'idle', 300000, 'taken', 2, 1, 1)",
+        [],
+    )
+    .unwrap();
+
+    let kept: (i64, i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM clients WHERE notes = 'Net 15' AND archived_at = 30),
+                        (SELECT COUNT(*) FROM projects WHERE client_id = 'c1'),
+                        (SELECT COUNT(*) FROM segments),
+                        (SELECT COUNT(*) FROM time_entries WHERE invoice_id = 'inv1' AND ended_at - started_at = 3600000),
+                        (SELECT total_cents FROM invoices WHERE id = 'inv1'),
+                        (SELECT COUNT(*) FROM invoice_lines WHERE entry_id = 'e1')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .unwrap();
+    assert_eq!(kept, (1, 1, 2, 1, 10_000, 1));
+    // Invoiced time is still protected after the upgrade.
+    assert!(
+        conn.execute(
+            "UPDATE time_entries SET description = 'x' WHERE id = 'e1'",
+            []
+        )
+        .is_err()
+    );
+}
+
+/// A database as v9 shipped it, with agent time on an unbilled entry, on
+/// a draft invoice and on an issued one, next to the person's own time.
+#[test]
+fn a_v9_database_drops_agent_data_and_keeps_everything_else() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+    conn.execute_batch(AGENTS_V9).unwrap();
+    conn.execute_batch(
+            "INSERT INTO clients (id, name, created_at, updated_at) VALUES ('c1', 'Acme', 1, 1);
+             INSERT INTO projects (id, client_id, name, color, created_at, updated_at)
+               VALUES ('p1', 'c1', 'Swap', '#fff', 1, 1);
+             INSERT INTO time_entries (id, started_at, ended_at, description, project_id, status, source, billable, invoice_id, created_at, updated_at)
+               VALUES ('you', 0, 3600000, 'Work', 'p1', 'approved', 'auto', 1, NULL, 1, 1),
+                      ('carved', 3600000, 7200000, 'Work', 'p1', 'approved', 'auto', 1, NULL, 1, 1),
+                      ('bot-free', 0, 1800000, 'agent', 'p1', 'approved', 'agent', 1, NULL, 1, 1),
+                      ('bot-draft', 0, 1800000, 'agent', 'p1', 'approved', 'agent', 1, 'draft', 1, 1),
+                      ('bot-issued', 0, 1800000, 'agent', 'p1', 'approved', 'agent', 1, 'issued', 1, 1);
+             UPDATE time_entries SET agent_job_id = 'job' WHERE id LIKE 'bot-%';
+             INSERT INTO entry_events (id, entry_id, kind, actor, at)
+               VALUES ('ev1', 'bot-free', 'accepted', 'me', 1), ('ev2', 'you', 'accepted', 'me', 1);
+             INSERT INTO agent_jobs (id, source, agent, pane_key, project_id, cwd, started_at, state, state_since, last_seen_at, created_at, updated_at)
+               VALUES ('job', 'herdr', 'claude', 'pane', 'p1', '/work', 1, 'working', 1, 1, 1, 1);
+             INSERT INTO agent_transitions (job_id, at, state) VALUES ('job', 1, 'working');
+             INSERT INTO agent_focus (pane_key, project_id, agent, started_at, ended_at)
+               VALUES ('pane', 'p1', 'claude', 1, 2);
+             INSERT INTO invoices (id, client_id, client_name, currency, status, from_name, from_address, total_cents, created_at, updated_at)
+               VALUES ('draft', 'c1', 'Acme', 'USD', 'draft', 'Me', '1 Main', 15000, 5, 5),
+                      ('issued', 'c1', 'Acme', 'USD', 'open', 'Me', '1 Main', 5000, 5, 5);
+             INSERT INTO invoice_lines (id, invoice_id, position, kind, entry_id, project_name, description, started_at, ended_at, quantity_hundredths, unit, rate_cents, amount_cents)
+               VALUES ('l1', 'draft', 0, 'time', 'you', 'Swap', 'Work', 0, 3600000, 100, 'hrs', 10000, 10000),
+                      ('l2', 'draft', 1, 'time', 'bot-draft', 'Swap', 'agent', 0, 1800000, 50, 'hrs', 10000, 5000),
+                      ('l3', 'issued', 0, 'time', 'bot-issued', 'Swap', 'agent', 0, 1800000, 50, 'hrs', 10000, 5000);
+             PRAGMA user_version = 9;",
+        )
+        .unwrap();
+
+    run_migrations(&mut conn).unwrap();
+
+    let mut fresh = Connection::open_in_memory().unwrap();
+    run_migrations(&mut fresh).unwrap();
+    assert_eq!(schema_snapshot(&fresh), schema_snapshot(&conn));
+    let version: i32 = conn
+        .query_row("PRAGMA user_version;", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+    for table in ["agent_jobs", "agent_transitions", "agent_focus"] {
+        assert!(conn.prepare(&format!("SELECT 1 FROM {table}")).is_err());
+    }
+
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM time_entries ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_>>()
+        .unwrap();
+    assert_eq!(ids, ["carved", "you"]);
+    let events: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entry_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(events, 1);
+
+    // The draft keeps its total: the agent line is now a fixed line.
+    let lines: Vec<(String, String, Option<String>, i64)> = conn
+        .prepare("SELECT id, kind, entry_id, amount_cents FROM invoice_lines ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_>>()
+        .unwrap();
+    assert_eq!(
+        lines,
+        [
+            ("l1".into(), "time".into(), Some("you".into()), 10_000),
+            ("l2".into(), "manual".into(), None, 5_000),
+            ("l3".into(), "time".into(), Some("bot-issued".into()), 5_000),
+        ]
+    );
+    let totals: i64 = conn
+        .query_row(
+            "SELECT total_cents FROM invoices WHERE id = 'draft'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(totals, 15_000);
+}
+
+#[test]
+fn zero_length_segments_do_not_create_entries() {
+    let segment = aevio_core::entry_builder::SegmentInput {
+        id: 1,
+        app: "Code".to_string(),
+        title: "main.rs".to_string(),
+        kind: "activity".to_string(),
+        label: None,
+        started_at: 10,
+        ended_at: Some(10),
+        entry_id: None,
+    };
+    let entries = aevio_core::entry_builder::build_entries(
+        &[segment],
+        &[],
+        &aevio_core::entry_builder::EntrySettings::default(),
+        1000,
+    );
+
+    assert!(entries.is_empty());
+}
+
+#[test]
+fn window_titles_are_searchable_by_substring() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    conn.execute(
+            "INSERT INTO segments (app, title, kind, started_at) VALUES ('Zed', 'invoices.rs - Aevio', 'activity', 1);",
+            [],
+        )
+        .unwrap();
+
+    let hits = |conn: &Connection, pattern: &str| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM segments_fts WHERE title LIKE ?1;",
+            [pattern],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(hits(&conn, "%invoices.rs%"), 1);
+    assert_eq!(hits(&conn, "%aevio%"), 1);
+
+    conn.execute(
+            "INSERT INTO segments (app, title, kind, started_at) VALUES ('Safari', 'docs.rs serde', 'activity', 2);",
+            [],
+        )
+        .unwrap();
+    assert_eq!(hits(&conn, "%serde%"), 1);
+
+    conn.execute(
+        "UPDATE segments SET title = 'renamed' WHERE app = 'Safari';",
+        [],
+    )
+    .unwrap();
+    assert_eq!(hits(&conn, "%serde%"), 0);
+    assert_eq!(hits(&conn, "%renamed%"), 1);
+
+    conn.execute("DELETE FROM segments WHERE app = 'Zed';", [])
+        .unwrap();
+    assert_eq!(hits(&conn, "%invoices%"), 0);
+}
+
+/// The old v1-v7 ladder exists only here so the schema-equivalence test
+/// compares introspected results rather than relying on visual inspection.
+mod legacy_v1_through_v7 {
+    use rusqlite::{Connection, Result};
+
+    pub fn run(conn: &mut Connection) -> Result<()> {
+        conn.execute_batch(
+            "
+                CREATE TABLE IF NOT EXISTS segments (
+                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                  app        TEXT    NOT NULL,
+                  title      TEXT    NOT NULL,
+                  kind       TEXT    NOT NULL,
+                  label      TEXT,
+                  started_at INTEGER NOT NULL,
+                  ended_at   INTEGER,
+                  reviewed   INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_segments_started_at ON segments (started_at);
+                CREATE INDEX IF NOT EXISTS idx_segments_ended_at ON segments (ended_at);
+
+                CREATE TABLE IF NOT EXISTS settings (
+                  key   TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS daily_rollups (
+                  day_epoch INTEGER NOT NULL,
+                  kind      TEXT    NOT NULL,
+                  total_ms  INTEGER NOT NULL,
+                  PRIMARY KEY (day_epoch, kind)
+                );
+                PRAGMA user_version = 1;
+                ",
+        )?;
+
+        let tx = conn.transaction()?;
+        tx.execute("ALTER TABLE segments ADD COLUMN app_id TEXT;", [])?;
+        tx.execute("ALTER TABLE segments ADD COLUMN bundle_id TEXT;", [])?;
+        tx.execute("ALTER TABLE segments ADD COLUMN url TEXT;", [])?;
+        tx.execute("ALTER TABLE segments ADD COLUMN domain TEXT;", [])?;
+        tx.execute("ALTER TABLE segments ADD COLUMN entry_id TEXT;", [])?;
+        tx.execute_batch(
+            "
+                CREATE INDEX IF NOT EXISTS idx_segments_entry_id ON segments (entry_id);
+
+                CREATE TABLE IF NOT EXISTS apps (
+                  id                  TEXT PRIMARY KEY,
+                  kind                TEXT NOT NULL,
+                  identifier          TEXT NOT NULL UNIQUE,
+                  display_name        TEXT NOT NULL,
+                  icon_png            BLOB,
+                  default_category_id TEXT,
+                  default_project_id  TEXT,
+                  excluded            INTEGER NOT NULL DEFAULT 0,
+                  first_seen          INTEGER NOT NULL,
+                  last_seen           INTEGER NOT NULL,
+                  created_at          INTEGER NOT NULL,
+                  updated_at          INTEGER NOT NULL,
+                  deleted_at          INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS categories (
+                  id               TEXT PRIMARY KEY,
+                  name             TEXT NOT NULL,
+                  color            TEXT NOT NULL,
+                  description      TEXT,
+                  ai_prompt        TEXT,
+                  billable_default INTEGER NOT NULL DEFAULT 0,
+                  counts_as_work   INTEGER NOT NULL DEFAULT 1,
+                  archived         INTEGER NOT NULL DEFAULT 0,
+                  sort             INTEGER NOT NULL DEFAULT 0,
+                  created_at       INTEGER NOT NULL,
+                  updated_at       INTEGER NOT NULL,
+                  deleted_at       INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS projects (
+                  id               TEXT PRIMARY KEY,
+                  client_id        TEXT,
+                  name             TEXT NOT NULL,
+                  color            TEXT NOT NULL,
+                  description      TEXT,
+                  ai_hints         TEXT,
+                  status           TEXT NOT NULL DEFAULT 'active',
+                  due_date         INTEGER,
+                  budget_kind      TEXT NOT NULL DEFAULT 'none',
+                  budget_value     REAL,
+                  budget_period    TEXT NOT NULL DEFAULT 'total',
+                  billable_default INTEGER NOT NULL DEFAULT 0,
+                  hourly_rate      REAL,
+                  created_at       INTEGER NOT NULL,
+                  updated_at       INTEGER NOT NULL,
+                  deleted_at       INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS clients (
+                  id           TEXT PRIMARY KEY,
+                  name         TEXT NOT NULL,
+                  email        TEXT,
+                  address      TEXT,
+                  default_rate REAL,
+                  currency     TEXT,
+                  created_at   INTEGER NOT NULL,
+                  updated_at   INTEGER NOT NULL,
+                  deleted_at   INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS rules (
+                  id          TEXT PRIMARY KEY,
+                  match_kind  TEXT NOT NULL,
+                  pattern     TEXT NOT NULL,
+                  category_id TEXT,
+                  project_id  TEXT,
+                  priority    INTEGER NOT NULL DEFAULT 0,
+                  enabled     INTEGER NOT NULL DEFAULT 1,
+                  origin      TEXT NOT NULL DEFAULT 'manual',
+                  created_at  INTEGER NOT NULL,
+                  updated_at  INTEGER NOT NULL,
+                  deleted_at  INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS time_entries (
+                  id          TEXT PRIMARY KEY,
+                  started_at  INTEGER NOT NULL,
+                  ended_at    INTEGER NOT NULL,
+                  description TEXT NOT NULL,
+                  category_id TEXT,
+                  project_id  TEXT,
+                  status      TEXT NOT NULL DEFAULT 'pending',
+                  approved_by TEXT,
+                  source      TEXT NOT NULL DEFAULT 'auto',
+                  billable    INTEGER NOT NULL DEFAULT 0,
+                  invoice_id  TEXT,
+                  created_at  INTEGER NOT NULL,
+                  updated_at  INTEGER NOT NULL,
+                  deleted_at  INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_time_entries_started_at ON time_entries (started_at);
+                CREATE INDEX IF NOT EXISTS idx_time_entries_status ON time_entries (status);
+
+                CREATE TABLE IF NOT EXISTS suggestions (
+                  id            TEXT PRIMARY KEY,
+                  entry_id      TEXT NOT NULL,
+                  field         TEXT NOT NULL,
+                  value_id      TEXT,
+                  confidence    REAL NOT NULL,
+                  signals       TEXT,
+                  rationale     TEXT,
+                  alternatives  TEXT,
+                  engine        TEXT NOT NULL DEFAULT 'full',
+                  model_version TEXT,
+                  outcome       TEXT,
+                  created_at    INTEGER NOT NULL,
+                  updated_at    INTEGER NOT NULL,
+                  deleted_at    INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS entry_events (
+                  id       TEXT PRIMARY KEY,
+                  entry_id TEXT NOT NULL,
+                  kind     TEXT NOT NULL,
+                  actor    TEXT NOT NULL,
+                  payload  TEXT,
+                  at       INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_entry_events_entry_id ON entry_events (entry_id);
+                ",
+        )?;
+
+        super::super::seed_default_categories(&tx)?;
+        tx.execute("PRAGMA user_version = 2;", [])?;
+        tx.commit()?;
+
+        let tx = conn.transaction()?;
+        tx.execute(
+                "ALTER TABLE time_entries ADD COLUMN description_origin TEXT NOT NULL DEFAULT 'template';",
+                [],
+            )?;
+        tx.execute_batch(
+                "
+                CREATE INDEX IF NOT EXISTS idx_suggestions_entry ON suggestions (entry_id, field, created_at);
+
+                CREATE TABLE IF NOT EXISTS entry_embeddings (
+                  entry_id   TEXT PRIMARY KEY,
+                  vec        BLOB NOT NULL,
+                  text_hash  TEXT NOT NULL,
+                  features   TEXT NOT NULL,
+                  model      TEXT NOT NULL,
+                  created_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS classify_jobs (
+                  id         TEXT PRIMARY KEY,
+                  entry_id   TEXT NOT NULL,
+                  kind       TEXT NOT NULL DEFAULT 'classify',
+                  state      TEXT NOT NULL DEFAULT 'queued',
+                  attempts   INTEGER NOT NULL DEFAULT 0,
+                  next_at    INTEGER NOT NULL,
+                  last_error TEXT,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  UNIQUE (entry_id, kind)
+                );
+                CREATE INDEX IF NOT EXISTS idx_classify_jobs_state ON classify_jobs (state, next_at);
+
+                CREATE TABLE IF NOT EXISTS model_artifacts (
+                  id          TEXT PRIMARY KEY,
+                  kind        TEXT NOT NULL,
+                  path        TEXT NOT NULL,
+                  trained_at  INTEGER NOT NULL,
+                  n_examples  INTEGER NOT NULL,
+                  holdout_acc REAL,
+                  calibration TEXT,
+                  active      INTEGER NOT NULL DEFAULT 0
+                );
+                ",
+            )?;
+        tx.execute("PRAGMA user_version = 3;", [])?;
+        tx.commit()?;
+
+        let tx = conn.transaction()?;
+        tx.execute(
+            "ALTER TABLE suggestions ADD COLUMN raw_confidence REAL;",
+            [],
+        )?;
+        tx.execute("ALTER TABLE suggestions ADD COLUMN tier TEXT;", [])?;
+        tx.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_suggestions_created_at ON suggestions (created_at);
+                 CREATE INDEX IF NOT EXISTS idx_model_artifacts_kind ON model_artifacts (kind, active, trained_at);",
+            )?;
+        tx.execute("PRAGMA user_version = 4;", [])?;
+        tx.commit()?;
+
+        let tx = conn.transaction()?;
+        tx.execute_batch(
+                "
+                CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
+                  title, content='segments', content_rowid='id', tokenize='trigram'
+                );
+                CREATE TRIGGER IF NOT EXISTS segments_fts_insert AFTER INSERT ON segments BEGIN
+                  INSERT INTO segments_fts (rowid, title) VALUES (new.id, new.title);
+                END;
+                CREATE TRIGGER IF NOT EXISTS segments_fts_delete AFTER DELETE ON segments BEGIN
+                  INSERT INTO segments_fts (segments_fts, rowid, title) VALUES ('delete', old.id, old.title);
+                END;
+                CREATE TRIGGER IF NOT EXISTS segments_fts_update AFTER UPDATE OF title ON segments BEGIN
+                  INSERT INTO segments_fts (segments_fts, rowid, title) VALUES ('delete', old.id, old.title);
+                  INSERT INTO segments_fts (rowid, title) VALUES (new.id, new.title);
+                END;
+                INSERT INTO segments_fts (segments_fts) VALUES ('rebuild');
+
+                CREATE INDEX IF NOT EXISTS idx_time_entries_project ON time_entries (project_id, started_at);
+                CREATE INDEX IF NOT EXISTS idx_rules_project ON rules (project_id);
+                ",
+            )?;
+        tx.execute("PRAGMA user_version = 5;", [])?;
+        tx.commit()?;
+
+        let tx = conn.transaction()?;
+        tx.execute("PRAGMA user_version = 6;", [])?;
+        tx.commit()?;
+
+        let tx = conn.transaction()?;
+        tx.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS energy_samples (
+                  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                  sampled_at   INTEGER NOT NULL,
+                  duration_ms  INTEGER NOT NULL,
+                  cpu_time_ms  INTEGER NOT NULL,
+                  energy_nj    INTEGER NOT NULL,
+                  power_watts  REAL NOT NULL,
+                  impact_level TEXT NOT NULL,
+                  ai_active    INTEGER NOT NULL DEFAULT 0,
+                  on_battery   INTEGER NOT NULL DEFAULT 0,
+                  battery_level REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_energy_samples_sampled_at ON energy_samples (sampled_at);
+                ",
+            )?;
+        tx.execute("PRAGMA user_version = 7;", [])?;
+        tx.commit()?;
+
+        Ok(())
+    }
+}

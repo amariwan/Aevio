@@ -1,0 +1,23 @@
+[workspace]
+members = [
+  "crates/aevio-application",
+  "crates/aevio-contracts",
+  "crates/aevio-core",
+  "crates/aevio-http",
+  "crates/aevio-infrastructure",
+  "crates/aevio-persistence",
+  "crates/aevio-persistence/postgres-adapter",
+  "crates/aevio-services",
+  "apps/api",
+  "apps/desktop/tauri",
+  "apps/cli",
+]
+resolver = "2"
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

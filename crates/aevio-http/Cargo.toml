@@ -1,0 +1,12 @@
+[package]
+name = "aevio-http"
+version = "0.9.39"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+aevio-application = { path = "../aevio-application" }
+aevio-contracts = { path = "../aevio-contracts" }
+axum = "0.8"
+serde_json = "1"
+sha2 = "0.10"

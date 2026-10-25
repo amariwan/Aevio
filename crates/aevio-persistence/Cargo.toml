@@ -1,0 +1,19 @@
+[package]
+name = "aevio-persistence"
+version = "0.9.39"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+aevio-application = { path = "../aevio-application" }
+aevio-core = { path = "../aevio-core" }
+aevio-contracts = { path = "../aevio-contracts" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
+sea-orm-sync = { version = "2.0.4", default-features = false, features = ["sync", "macros", "rusqlite", "postgres-array", "with-chrono", "with-json", "with-uuid", "sqlite-use-returning-for-3_35"] }
+serde_json = "1"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+regex = "1"
+dirs = "6"

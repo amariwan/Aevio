@@ -1,0 +1,3 @@
+# Biome and rustfmt check for LF; keep Windows checkouts from converting.
+* text=auto eol=lf
+graphify-out/graph.json merge=graphify

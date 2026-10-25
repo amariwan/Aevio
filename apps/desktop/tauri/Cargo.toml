@@ -1,0 +1,75 @@
+[package]
+name = "aevio"
+version = "0.9.39"
+description = "Automatic, private, local-first time tracking for your Mac"
+authors = ["Kareem Elgohry <kareemdev52@gmail.com>"]
+edition = "2021"
+default-run = "aevio"
+
+# Part of the root workspace (see /Cargo.toml).
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "aevio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+aevio-core = { path = "../../../crates/aevio-core" }
+aevio-contracts = { path = "../../../crates/aevio-contracts" }
+aevio-infrastructure = { path = "../../../crates/aevio-infrastructure" }
+aevio-persistence = { path = "../../../crates/aevio-persistence" }
+aevio-services = { path = "../../../crates/aevio-services" }
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+url = "2"
+user-idle3 = "0.7.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+regex = "1"
+tauri-plugin-updater = "2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "system-proxy", "blocking"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+semver = "1"
+# Invoice PDFs are composed in Rust (see src/invoices/pdf.rs); the same bytes
+# are previewed in the webview, saved by the user and archived on finalize.
+printpdf = { version = "=0.8.2", default-features = false, features = ["png", "jpeg"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+# Logo import: decode, downsize and re-encode uploads before they are stored.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# One running copy per data dir: two processes sharing activity.db each leave
+# the other's open segment behind, and one left open runs a session forever.
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+libc = "0.2"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSProcessInfo", "NSNotification", "NSDistributedNotificationCenter"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSResponder", "NSWindow", "NSPanel", "NSSound"] }
+block2 = "0.6"
+
+# Same versions tao already pulls in, so Windows builds carry one copy of each.
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Media_Audio",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Power",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
+  "Win32_UI_Accessibility",
+  "Win32_UI_WindowsAndMessaging",
+] }
+

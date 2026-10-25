@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "aevio",
+  "version": "0.9.39",
+  "identifier": "com.offlinestudios.aevio",
+  "build": {
+    "beforeDevCommand": {
+      "script": "bun dev",
+      "cwd": "../../web"
+    },
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": {
+      "script": "bun build",
+      "cwd": "../../web"
+    },
+    "frontendDist": "../../web/out"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "Aevio",
+        "visible": false,
+        "width": 1160,
+        "height": 780,
+        "minWidth": 720,
+        "minHeight": 560,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 19 }
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJFQTRGMzZBNkYyNzYzNEMKUldSTVl5ZHZhdk9rTGdYYlFlM0dhaUNVYVNBZEkydXpDT1VyTDVvelM1MzJqY20xSkpVbW42QW0K",
+      "endpoints": [
+        "https://github.com/amariwan/Aevio/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

@@ -1,0 +1,36 @@
+[package]
+name = "aevio-infrastructure"
+version = "0.9.39"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+aevio-core = { path = "../aevio-core" }
+aevio-persistence = { path = "../aevio-persistence" }
+aevio-contracts = { path = "../aevio-contracts" }
+aevio-services = { path = "../aevio-services" }
+dirs = "6"
+interprocess = "2"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+base64 = "0.22"
+ed25519-dalek = "2"
+sha2 = "0.10"
+zip = "4.6.1"
+uuid = { version = "1", features = ["v7"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1.2.1"
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Threading",
+] }

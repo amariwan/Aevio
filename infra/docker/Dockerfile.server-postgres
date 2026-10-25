@@ -1,0 +1,26 @@
+# Multi-stage build for the unified self-hosted server using PostgreSQL.
+# Build from the repository root:
+#   docker build -f infra/docker/Dockerfile.server-postgres -t aevio-server:local .
+
+FROM rust:1.85-bookworm AS builder
+WORKDIR /src
+
+# Copy the workspace manifests first to cache dependency builds.
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY apps/api ./apps/api
+
+# Build the release binary.
+RUN cargo build --release -p aevio-server
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/target/release/aevio-server /usr/local/bin/aevio-server
+
+ENV AEVIO_SERVER_BIND=0.0.0.0:47832
+EXPOSE 47832
+
+ENTRYPOINT ["/usr/local/bin/aevio-server"]

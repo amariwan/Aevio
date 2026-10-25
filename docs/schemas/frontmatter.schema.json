@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aevio.local/docs/schemas/frontmatter.schema.json",
+  "title": "Aevio Documentation Frontmatter",
+  "type": "object",
+  "required": ["id", "title", "category", "domain", "status", "source_paths", "related_docs", "platforms", "verification_commit"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9.-]*$" },
+    "title": { "type": "string", "minLength": 1 },
+    "category": { "type": "string", "enum": ["architecture", "features", "platforms", "engineering", "reference", "operations", "decisions", "agents"] },
+    "domain": { "type": "string" },
+    "status": { "type": "string", "enum": ["implemented", "experimental", "planned", "deprecated", "unsupported", "unknown", "accepted", "proposed"] },
+    "source_paths": { "type": "array", "items": { "type": "string" } },
+    "related_docs": { "type": "array", "items": { "type": "string" } },
+    "platforms": { "type": "array", "items": { "type": "string", "enum": ["macos", "windows", "linux", "ios", "watchos"] } },
+    "verification_commit": { "type": "string" },
+    "owner": { "type": "string" },
+    "symbols": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

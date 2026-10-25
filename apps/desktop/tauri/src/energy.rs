@@ -1,0 +1,491 @@
+//! Process energy impact and battery monitoring.
+//!
+//! Samples process CPU time and energy counters (via macOS `proc_pid_rusage`
+//! and IOKit power sources) on a 15-second cadence and records telemetry into
+//! `energy_samples` in SQLite.
+//!
+//! Tracks Aevio's main process and any child sidecar process (`aevio-ml`),
+//! correlating energy spikes with AI classification and model retraining.
+//! Surfaces relative energy impact (low / medium / high) and cumulative
+//! battery usage for Settings and benchmarking.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::ai::AiRuntime;
+use crate::timers::now_epoch_ms;
+use aevio_persistence::database::repositories::energy::{sample, EnergyRepository, NewSample};
+use aevio_persistence::database::{connect, DatabaseConnection};
+
+pub const EVENT_ENERGY_CHANGED: &str = "energy-changed";
+pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(15);
+pub const DEFAULT_HISTORY_DAYS: u32 = 7;
+
+/// Standard MacBook nominal battery capacity: ~70 Watt-hours = 252,000 Joules.
+const NOMINAL_BATTERY_JOULES: f64 = 70.0 * 3600.0;
+/// Standard 1 mWh = 3.6 Joules.
+const JOULES_PER_MWH: f64 = 3.6;
+
+/// Power thresholds in Watts for energy impact levels.
+pub const THRESHOLD_LOW_WATTS: f64 = 0.5;
+pub const THRESHOLD_MEDIUM_WATTS: f64 = 2.0;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnergySample {
+    pub id: i64,
+    pub sampled_at: u64,
+    pub duration_ms: u32,
+    pub cpu_time_ms: u32,
+    pub energy_nj: u64,
+    pub power_watts: f64,
+    pub impact_level: String,
+    pub ai_active: bool,
+    pub on_battery: bool,
+    pub battery_level: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnergySummary {
+    pub current_impact: String,
+    pub current_power_watts: f64,
+    pub baseline_power_watts: f64,
+    pub peak_power_watts: f64,
+    pub impact_description: String,
+    pub battery_used_pct: f64,
+    pub battery_used_mwh: f64,
+    pub total_energy_joules: f64,
+    pub total_cpu_time_ms: u64,
+    pub ai_energy_pct: f64,
+    pub on_battery: bool,
+    pub current_battery_pct: Option<f64>,
+    pub samples_count: u32,
+    pub window_days: u32,
+    pub recommendation: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProcessRusage {
+    pub cpu_time_ns: u64,
+    pub billed_energy_nj: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BatteryInfo {
+    pub on_battery: bool,
+    pub battery_percent: Option<f64>,
+}
+
+pub fn impact_level_for_power(power_watts: f64) -> &'static str {
+    if power_watts < THRESHOLD_LOW_WATTS {
+        "low"
+    } else if power_watts < THRESHOLD_MEDIUM_WATTS {
+        "medium"
+    } else {
+        "high"
+    }
+}
+
+// --- Native telemetry, one file per platform --------------------------------
+
+#[cfg_attr(target_os = "macos", path = "energy/macos.rs")]
+#[cfg_attr(windows, path = "energy/windows.rs")]
+#[cfg_attr(not(any(target_os = "macos", windows)), path = "energy/unsupported.rs")]
+mod native;
+
+pub fn read_process_rusage(pid: i32) -> Option<ProcessRusage> {
+    native::read_proc_rusage(pid)
+}
+
+pub fn read_battery_info() -> BatteryInfo {
+    native::read_battery_info()
+}
+
+// --- Background energy sampler -----------------------------------------------
+
+pub fn spawn_sampler(app: AppHandle, db_path: PathBuf) {
+    let running = Arc::new(AtomicBool::new(true));
+    let handle = app.clone();
+
+    std::thread::Builder::new()
+        .name("energy-sampler".to_string())
+        .spawn(move || {
+            let conn = match connect(&db_path) {
+                Ok(conn) => conn,
+                Err(error) => {
+                    eprintln!("energy sampler could not open db: {error}");
+                    return;
+                }
+            };
+
+            run_sampler_loop(handle, conn, running);
+        })
+        .expect("spawn energy sampler");
+}
+
+fn run_sampler_loop(app: AppHandle, conn: DatabaseConnection, running: Arc<AtomicBool>) {
+    let main_pid = std::process::id() as i32;
+
+    let mut last_sample_time = Instant::now();
+    let mut last_total_cpu_ns = read_total_cpu_ns(&app, main_pid);
+    let mut last_total_energy_nj = read_total_energy_nj(&app, main_pid);
+
+    while running.load(Ordering::Relaxed) {
+        std::thread::sleep(SAMPLE_INTERVAL);
+
+        let now_instant = Instant::now();
+        let elapsed = now_instant.duration_since(last_sample_time);
+        last_sample_time = now_instant;
+
+        let cur_cpu_ns = read_total_cpu_ns(&app, main_pid);
+        let cur_energy_nj = read_total_energy_nj(&app, main_pid);
+
+        let delta_cpu_ns = cur_cpu_ns.saturating_sub(last_total_cpu_ns);
+        let mut delta_energy_nj = cur_energy_nj.saturating_sub(last_total_energy_nj);
+
+        last_total_cpu_ns = cur_cpu_ns;
+        last_total_energy_nj = cur_energy_nj;
+
+        let delta_time_s = elapsed.as_secs_f64().max(0.1);
+        let cpu_seconds = delta_cpu_ns as f64 / 1_000_000_000.0;
+
+        // If hardware energy counters are not available or returned zero,
+        // estimate energy from active CPU time (~3.0 Watts per core-second).
+        if delta_energy_nj == 0 {
+            let estimated_joules = cpu_seconds * 3.0;
+            delta_energy_nj = (estimated_joules * 1_000_000_000.0) as u64;
+        }
+
+        let power_watts = (delta_energy_nj as f64 / 1_000_000_000.0) / delta_time_s;
+        let impact = impact_level_for_power(power_watts);
+
+        let ai_runtime = app.try_state::<AiRuntime>();
+        let ai_active = ai_runtime.map(|rt| rt.is_busy()).unwrap_or(false);
+
+        let battery = read_battery_info();
+        let now_ms = now_epoch_ms();
+        let duration_ms = (delta_time_s * 1000.0) as u32;
+        let cpu_time_ms = (cpu_seconds * 1000.0) as u32;
+
+        let insert_res = EnergyRepository::new(&conn).insert(sample(NewSample {
+            sampled_at: now_ms as i64,
+            duration_ms: i64::from(duration_ms),
+            cpu_time_ms: i64::from(cpu_time_ms),
+            energy_nj: delta_energy_nj as i64,
+            power_watts,
+            impact_level: impact.to_string(),
+            ai_active,
+            on_battery: battery.on_battery,
+            battery_level: battery.battery_percent,
+        }));
+
+        if let Err(error) = insert_res {
+            eprintln!("failed to persist energy sample: {error}");
+            continue;
+        }
+
+        if let Ok(summary) = get_summary(
+            &conn,
+            DEFAULT_HISTORY_DAYS,
+            Some(battery),
+            Some(power_watts),
+        ) {
+            let _ = app.emit(EVENT_ENERGY_CHANGED, &summary);
+        }
+    }
+}
+
+fn read_total_cpu_ns(app: &AppHandle, main_pid: i32) -> u64 {
+    let main_rusage = read_process_rusage(main_pid).unwrap_or_default();
+    let sidecar_pid = app.try_state::<AiRuntime>().and_then(|rt| rt.sidecar_pid());
+
+    let sidecar_rusage = sidecar_pid
+        .and_then(|pid| read_process_rusage(pid as i32))
+        .unwrap_or_default();
+
+    main_rusage.cpu_time_ns + sidecar_rusage.cpu_time_ns
+}
+
+fn read_total_energy_nj(app: &AppHandle, main_pid: i32) -> u64 {
+    let main_rusage = read_process_rusage(main_pid).unwrap_or_default();
+    let sidecar_pid = app.try_state::<AiRuntime>().and_then(|rt| rt.sidecar_pid());
+
+    let sidecar_rusage = sidecar_pid
+        .and_then(|pid| read_process_rusage(pid as i32))
+        .unwrap_or_default();
+
+    main_rusage.billed_energy_nj + sidecar_rusage.billed_energy_nj
+}
+
+// --- Query and summary helpers -----------------------------------------------
+
+pub fn get_summary(
+    conn: &DatabaseConnection,
+    days: u32,
+    battery: Option<BatteryInfo>,
+    latest_power_override: Option<f64>,
+) -> Result<EnergySummary, String> {
+    let days = days.clamp(1, 365);
+    let now = now_epoch_ms();
+    let since = now.saturating_sub(u64::from(days) * 24 * 60 * 60 * 1000);
+
+    let samples = EnergyRepository::new(conn)
+        .since(since as i64)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(energy_sample_from_model)
+        .collect::<Vec<_>>();
+
+    let battery_info = battery.unwrap_or_else(read_battery_info);
+
+    let samples_count = samples.len() as u32;
+    if samples.is_empty() {
+        let current_power = latest_power_override.unwrap_or(0.0);
+        let impact = impact_level_for_power(current_power);
+        return Ok(EnergySummary {
+            current_impact: impact.to_string(),
+            current_power_watts: current_power,
+            baseline_power_watts: 0.05,
+            peak_power_watts: current_power,
+            impact_description: "Measuring energy impact…".to_string(),
+            battery_used_pct: 0.0,
+            battery_used_mwh: 0.0,
+            total_energy_joules: 0.0,
+            total_cpu_time_ms: 0,
+            ai_energy_pct: 0.0,
+            on_battery: battery_info.on_battery,
+            current_battery_pct: battery_info.battery_percent,
+            samples_count: 0,
+            window_days: days,
+            recommendation: energy_recommendation(impact, current_power, battery_info.on_battery),
+        });
+    }
+
+    let mut total_energy_nj: u64 = 0;
+    let mut ai_energy_nj: u64 = 0;
+    let mut total_cpu_time_ms: u64 = 0;
+    let mut peak_power: f64 = 0.0;
+
+    let mut idle_power_sum: f64 = 0.0;
+    let mut idle_power_count: u32 = 0;
+
+    for s in &samples {
+        total_energy_nj += s.energy_nj;
+        total_cpu_time_ms += u64::from(s.cpu_time_ms);
+        if s.power_watts > peak_power {
+            peak_power = s.power_watts;
+        }
+        if s.ai_active {
+            ai_energy_nj += s.energy_nj;
+        } else {
+            idle_power_sum += s.power_watts;
+            idle_power_count += 1;
+        }
+    }
+
+    let baseline_power = if idle_power_count > 0 {
+        idle_power_sum / f64::from(idle_power_count)
+    } else {
+        0.05
+    };
+
+    let latest_sample = samples.last().unwrap();
+    let current_power = latest_power_override.unwrap_or(latest_sample.power_watts);
+    let current_impact = impact_level_for_power(current_power);
+
+    let total_joules = total_energy_nj as f64 / 1_000_000_000.0;
+    let battery_used_mwh = total_joules / JOULES_PER_MWH;
+    let battery_used_pct = ((total_joules / NOMINAL_BATTERY_JOULES) * 100.0).clamp(0.0, 100.0);
+
+    let ai_energy_pct = if total_energy_nj > 0 {
+        ((ai_energy_nj as f64 / total_energy_nj as f64) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+
+    let ratio = if baseline_power > 0.001 {
+        current_power / baseline_power
+    } else {
+        1.0
+    };
+
+    let impact_description = match current_impact {
+        "low" => format!(
+            "Low ({:.2} W) · {:.1}x baseline ({:.2} W) · Ambient tracking",
+            current_power, ratio, baseline_power
+        ),
+        "medium" => format!(
+            "Medium ({:.2} W) · {:.1}x baseline ({:.2} W) · Normal activity & UI",
+            current_power, ratio, baseline_power
+        ),
+        _ => format!(
+            "High ({:.2} W) · {:.1}x baseline ({:.2} W) · On-device AI active",
+            current_power, ratio, baseline_power
+        ),
+    };
+
+    Ok(EnergySummary {
+        current_impact: current_impact.to_string(),
+        current_power_watts: (current_power * 100.0).round() / 100.0,
+        baseline_power_watts: (baseline_power * 100.0).round() / 100.0,
+        peak_power_watts: (peak_power * 100.0).round() / 100.0,
+        impact_description,
+        battery_used_pct: (battery_used_pct * 100.0).round() / 100.0,
+        battery_used_mwh: (battery_used_mwh * 10.0).round() / 10.0,
+        total_energy_joules: (total_joules * 10.0).round() / 10.0,
+        total_cpu_time_ms,
+        ai_energy_pct: (ai_energy_pct * 10.0).round() / 10.0,
+        on_battery: battery_info.on_battery,
+        current_battery_pct: battery_info.battery_percent,
+        samples_count,
+        window_days: days,
+        recommendation: energy_recommendation(
+            current_impact,
+            current_power,
+            battery_info.on_battery,
+        ),
+    })
+}
+
+fn energy_sample_from_model(
+    model: aevio_persistence::database::entities::energy::Model,
+) -> EnergySample {
+    EnergySample {
+        id: model.id,
+        sampled_at: model.sampled_at as u64,
+        duration_ms: model.duration_ms as u32,
+        cpu_time_ms: model.cpu_time_ms as u32,
+        energy_nj: model.energy_nj as u64,
+        power_watts: model.power_watts,
+        impact_level: model.impact_level,
+        ai_active: model.ai_active != 0,
+        on_battery: model.on_battery != 0,
+        battery_level: model.battery_level,
+    }
+}
+
+fn energy_recommendation(impact: &str, power_watts: f64, on_battery: bool) -> String {
+    if on_battery && impact == "high" {
+        return "High draw on battery: pause AI-heavy work or connect power.".to_string();
+    }
+    if impact == "high" {
+        return "High draw: let the current AI task finish before starting another.".to_string();
+    }
+    if impact == "medium" {
+        return format!(
+            "Moderate draw at {power_watts:.2} W; a short break will reduce active load."
+        );
+    }
+    "Low draw: Aevio is running efficiently.".to_string()
+}
+
+pub fn query_history(
+    conn: &DatabaseConnection,
+    since_ms: Option<u64>,
+    limit: Option<u32>,
+) -> Result<Vec<EnergySample>, String> {
+    let since = since_ms.unwrap_or(0);
+    let limit = limit.unwrap_or(500).clamp(1, 5000);
+
+    let mut samples = EnergyRepository::new(conn)
+        .history(since as i64, i64::from(limit) as u64)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(energy_sample_from_model)
+        .collect::<Vec<_>>();
+    samples.reverse();
+    Ok(samples)
+}
+
+pub fn purge_older_than(
+    conn: &DatabaseConnection,
+    days: u32,
+    now_ms: u64,
+) -> Result<usize, String> {
+    if days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now_ms.saturating_sub(u64::from(days) * 24 * 60 * 60 * 1000);
+    EnergyRepository::new(conn)
+        .purge_before(cutoff as i64)
+        .map(|removed| removed as usize)
+        .map_err(|e| e.to_string())
+}
+
+pub fn reset_history(conn: &DatabaseConnection) -> Result<(), String> {
+    EnergyRepository::new(conn)
+        .reset()
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aevio_persistence::database::entities::energy;
+    use aevio_persistence::database::sea_orm::{ConnectionTrait, Database, DbBackend, Schema};
+
+    #[test]
+    fn impact_level_thresholds() {
+        assert_eq!(impact_level_for_power(0.1), "low");
+        assert_eq!(impact_level_for_power(0.49), "low");
+        assert_eq!(impact_level_for_power(0.50), "medium");
+        assert_eq!(impact_level_for_power(1.99), "medium");
+        assert_eq!(impact_level_for_power(2.0), "high");
+        assert_eq!(impact_level_for_power(5.5), "high");
+    }
+
+    #[test]
+    fn recommendation_accounts_for_battery_and_impact() {
+        assert!(energy_recommendation("high", 3.2, true).contains("battery"));
+        assert!(energy_recommendation("high", 3.2, false).contains("AI task"));
+        assert!(energy_recommendation("low", 0.2, false).contains("efficiently"));
+    }
+
+    #[test]
+    fn summary_computation_on_samples() {
+        let conn = Database::connect("sqlite::memory:").unwrap();
+        let schema = Schema::new(DbBackend::Sqlite);
+        conn.execute(&schema.create_table_from_entity(energy::Entity))
+            .unwrap();
+
+        let now = now_epoch_ms();
+        EnergyRepository::new(&conn)
+            .insert(sample(NewSample {
+                sampled_at: now as i64 - 30_000,
+                duration_ms: 15_000,
+                cpu_time_ms: 150,
+                energy_nj: 1_500_000_000,
+                power_watts: 0.1,
+                impact_level: "low".to_string(),
+                ai_active: false,
+                on_battery: true,
+                battery_level: Some(85.0),
+            }))
+            .unwrap();
+        EnergyRepository::new(&conn)
+            .insert(sample(NewSample {
+                sampled_at: now as i64 - 15_000,
+                duration_ms: 15_000,
+                cpu_time_ms: 3_000,
+                energy_nj: 30_000_000_000,
+                power_watts: 2.0,
+                impact_level: "high".to_string(),
+                ai_active: true,
+                on_battery: true,
+                battery_level: Some(84.5),
+            }))
+            .unwrap();
+
+        let summary = get_summary(&conn, 7, None, None).unwrap();
+        assert_eq!(summary.samples_count, 2);
+        assert_eq!(summary.peak_power_watts, 2.0);
+        assert!(summary.ai_energy_pct > 90.0);
+        assert!(summary.battery_used_mwh > 0.0);
+    }
+}

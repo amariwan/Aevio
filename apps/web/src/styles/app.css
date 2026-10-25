@@ -1,0 +1,1290 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "./themes.css";
+
+.tiptap-notes-editor > :first-child {
+  margin-top: 0;
+}
+.tiptap-notes-editor p.is-editor-empty:first-child::before {
+  color: var(--fg-faint);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+.tiptap-notes-editor p,
+.tiptap-notes-editor ul,
+.tiptap-notes-editor ol,
+.tiptap-notes-editor blockquote,
+.tiptap-notes-editor pre {
+  margin: 0.8rem 0;
+}
+.tiptap-notes-editor p {
+  font-size: 1rem;
+  line-height: 1.8;
+}
+.tiptap-notes-editor h1 {
+  margin: 1.5rem 0 0.65rem;
+  font-size: 2rem;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+.tiptap-notes-editor h2 {
+  margin: 1.35rem 0 0.55rem;
+  font-size: 1.5rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.tiptap-notes-editor ul,
+.tiptap-notes-editor ol {
+  padding-left: 1.5rem;
+}
+.tiptap-notes-editor ul {
+  list-style: disc;
+}
+.tiptap-notes-editor ol {
+  list-style: decimal;
+}
+.tiptap-notes-editor ul[data-type="taskList"] {
+  padding-left: 0;
+  list-style: none;
+}
+.tiptap-notes-editor ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+.tiptap-notes-editor ul[data-type="taskList"] li > label {
+  margin-top: 0.38rem;
+  flex: 0 0 auto;
+}
+.tiptap-notes-editor ul[data-type="taskList"] li > label input {
+  accent-color: var(--accent-dim);
+}
+.tiptap-notes-editor ul[data-type="taskList"] li[data-checked="true"] > div {
+  color: var(--fg-faint);
+  text-decoration: line-through;
+}
+.tiptap-notes-editor blockquote {
+  border-left: 2px solid var(--accent-dim);
+  color: var(--fg-muted);
+  padding-left: 1rem;
+}
+.tiptap-notes-editor a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 3px;
+}
+.tiptap-notes-editor mark {
+  border-radius: 0.2rem;
+  background: color-mix(in srgb, var(--review) 42%, transparent);
+  color: inherit;
+  padding: 0.05rem 0.18rem;
+}
+.tiptap-notes-editor hr {
+  margin: 2rem 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.tiptap-notes-editor .tableWrapper {
+  overflow-x: auto;
+  margin: 1.25rem 0;
+}
+.tiptap-notes-editor table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.tiptap-notes-editor th,
+.tiptap-notes-editor td {
+  min-width: 6rem;
+  border: 1px solid var(--line);
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+.tiptap-notes-editor th {
+  background: var(--bg-surface-1);
+  color: var(--fg-strong);
+  font-weight: 650;
+}
+.tiptap-notes-editor td {
+  color: var(--fg-muted);
+}
+.tiptap-notes-editor code {
+  border-radius: 0.3rem;
+  background: var(--bg-surface-2);
+  padding: 0.15rem 0.3rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+}
+.tiptap-notes-editor pre {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--bg-inset-soft);
+  padding: 0.9rem 1rem;
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+/* `sharper:` styles an element only in the Sharper shape (Settings > Appearance),
+   which the root's `data-shape` attribute carries. Rounded is the base. */
+@custom-variant sharper (:where(:root[data-shape="sharper"]) &);
+
+/*
+ * Semantic tokens. Components never name a raw colour: they use utilities
+ * generated from these names (`text-fg-muted`, `border-line`, `bg-surface`, ...)
+ * so theme/mode is a variable swap, not a component rewrite.
+ *
+ * These are the zinc (neutral) defaults — the pre-paint fallback before JS runs.
+ * All palettes live in ./themes.css, selected by `data-theme` + `data-mode`.
+ */
+:root {
+  /* Normal is the existing 16px baseline. Rem utilities scale with the root. */
+  --ui-scale: 1;
+  font-size: calc(16px * var(--ui-scale));
+
+  --bg-canvas: #1d201f;
+  --bg-rail: #191c1b;
+  --bg-bar: #161817;
+  --bg-panel: #252827;
+  /* Settings cards are opaque and intentionally distinct from the canvas. */
+  --bg-settings-card: #2c322f;
+  --settings-card-border: rgba(255, 255, 255, 0.18);
+  --bg-surface-1: rgba(255, 255, 255, 0.05);
+  --bg-surface-2: rgba(255, 255, 255, 0.09);
+  --bg-inset: rgba(0, 0, 0, 0.35);
+  --bg-inset-soft: rgba(0, 0, 0, 0.18);
+  --bg-scrim: rgba(0, 0, 0, 0.6);
+
+  --fg-strong: #eef1ef;
+  --fg: #dde2df;
+  --fg-muted: rgba(238, 241, 239, 0.72);
+  --fg-soft: rgba(238, 241, 239, 0.52);
+  --fg-faint: rgba(238, 241, 239, 0.36);
+  --fg-ghost: rgba(238, 241, 239, 0.2);
+
+  --line: rgba(255, 255, 255, 0.08);
+  --line-soft: rgba(255, 255, 255, 0.04);
+  --line-strong: rgba(255, 255, 255, 0.2);
+
+  /* Categorical colours that sit beside the accent without competing with it. */
+  --break: #66b1df;
+  --review: #e7b447;
+  --danger: #e97e7b;
+  --danger-soft: rgba(233, 126, 123, 0.12);
+  /* Fixed green for "good news" (e.g. an available update), independent of
+     the user's accent choice. */
+  --success: #5bcf8f;
+  --success-soft: rgba(91, 207, 143, 0.15);
+
+  /* Accent defaults; overwritten inline from the chosen palette. */
+  --accent: oklch(0.97 0 0);
+  --accent-dim: #48ab74;
+  --accent-soft: rgba(91, 207, 143, 0.15);
+  --accent-rgb: 91, 207, 143;
+  --accent-fg: #10261a;
+
+  /* Canvas gradient stops, also accent-aware. */
+  --glow-1: rgba(var(--accent-rgb), 0.05);
+  --glow-2: rgba(var(--accent-rgb), 0.02);
+  --canvas-1: #191c1b;
+  --canvas-2: #1d201f;
+  --canvas-3: #222624;
+
+  /* Muted category palette tokens */
+  --cat-1: #75a4e5;
+  --cat-2: #56c2b1;
+  --cat-3: #52b788;
+  --cat-4: #df84b5;
+  --cat-5: #e4817d;
+  --cat-6: #9aa6b4;
+  --cat-7: #bfa181;
+  --cat-8: #707bf0;
+  --cat-9: #66b1df;
+  --cat-10: #9b87df;
+  --cat-11: #e97e7b;
+  --cat-12: #64748b;
+
+  /* Decision tiers (Settings → AI effectiveness), fixed order rule →
+     personal → model. Validated with the dataviz palette checks. */
+  --tier-rule: #5f8fd6;
+  --tier-personal: #4ebfa8;
+  --tier-model: #a07ad6;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+:root[data-size-mode="compact"] {
+  --ui-scale: 0.9;
+}
+
+:root[data-size-mode="relaxed"] {
+  --ui-scale: 1.1;
+}
+
+:root[data-size-mode="veryRelaxed"] {
+  --ui-scale: 1.2;
+}
+
+/* Tailwind's arbitrary pixel typography does not follow the root rem size.
+   Keep its original pixel values at Normal and scale them with the same factor
+   as the rem-based type and icon utilities everywhere, including Pulse. */
+.text-\[9px\] {
+  font-size: calc(9px * var(--ui-scale));
+}
+.text-\[9\.5px\] {
+  font-size: calc(9.5px * var(--ui-scale));
+}
+.text-\[10px\] {
+  font-size: calc(10px * var(--ui-scale));
+}
+.text-\[10\.5px\] {
+  font-size: calc(10.5px * var(--ui-scale));
+}
+.text-\[11px\] {
+  font-size: calc(11px * var(--ui-scale));
+}
+.text-\[11\.5px\] {
+  font-size: calc(11.5px * var(--ui-scale));
+}
+.text-\[12px\] {
+  font-size: calc(12px * var(--ui-scale));
+}
+.text-\[12\.5px\] {
+  font-size: calc(12.5px * var(--ui-scale));
+}
+.text-\[13px\] {
+  font-size: calc(13px * var(--ui-scale));
+}
+.text-\[13\.5px\] {
+  font-size: calc(13.5px * var(--ui-scale));
+}
+.text-\[14px\] {
+  font-size: calc(14px * var(--ui-scale));
+}
+.text-\[15px\] {
+  font-size: calc(15px * var(--ui-scale));
+}
+.text-\[17px\] {
+  font-size: calc(17px * var(--ui-scale));
+}
+.text-\[18px\] {
+  font-size: calc(18px * var(--ui-scale));
+}
+.text-\[20px\] {
+  font-size: calc(20px * var(--ui-scale));
+}
+.text-\[22px\] {
+  font-size: calc(22px * var(--ui-scale));
+}
+.text-\[26px\] {
+  font-size: calc(26px * var(--ui-scale));
+}
+.text-\[28px\] {
+  font-size: calc(28px * var(--ui-scale));
+}
+
+/* Pixel-sized glyphs are the only icons outside rem-based size utilities. */
+.size-\[7px\] {
+  width: calc(7px * var(--ui-scale));
+  height: calc(7px * var(--ui-scale));
+}
+.size-\[18px\] {
+  width: calc(18px * var(--ui-scale));
+  height: calc(18px * var(--ui-scale));
+}
+.w-\[4px\] {
+  width: calc(4px * var(--ui-scale));
+}
+
+@theme {
+  --color-canvas: var(--bg-canvas);
+  --color-rail: var(--bg-rail);
+  --color-bar: var(--bg-bar);
+  --color-panel: var(--bg-panel);
+  --color-settings-card: var(--bg-settings-card);
+  --color-settings-card-border: var(--settings-card-border);
+  --color-surface: var(--bg-surface-1);
+  --color-surface-strong: var(--bg-surface-2);
+  --color-inset: var(--bg-inset);
+  --color-inset-soft: var(--bg-inset-soft);
+  --color-scrim: var(--bg-scrim);
+
+  --color-fg: var(--fg);
+  --color-fg-strong: var(--fg-strong);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-soft: var(--fg-soft);
+  --color-fg-faint: var(--fg-faint);
+  --color-fg-ghost: var(--fg-ghost);
+
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-line-strong: var(--line-strong);
+
+  --color-break: var(--break);
+  --color-review: var(--review);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-fg: var(--accent-fg);
+
+  --color-tier-rule: var(--tier-rule);
+  --color-tier-personal: var(--tier-personal);
+  --color-tier-model: var(--tier-model);
+
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.app-root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  color: var(--fg);
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(1100px 700px at 8% -8%, var(--glow-1), transparent 62%),
+    radial-gradient(760px 520px at 100% 0%, var(--glow-2), transparent 60%),
+    linear-gradient(160deg, var(--canvas-1) 0%, var(--canvas-2) 45%, var(--canvas-3) 100%);
+  background-attachment: fixed;
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    border-color: var(--line);
+    outline-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 0.625rem;
+    height: 0.625rem;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--fg-soft);
+    background-clip: content-box;
+  }
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-new(root) {
+  animation: theme-reveal 0.35s ease-out forwards;
+}
+
+@keyframes theme-reveal {
+  from {
+    clip-path: circle(0% at var(--theme-x, 50%) var(--theme-y, 50%));
+  }
+  to {
+    clip-path: circle(150% at var(--theme-x, 50%) var(--theme-y, 50%));
+  }
+}
+
+/* The menu-bar panel's window is clear: the card draws its own rounded
+   corners, and macOS shades the window from the card's shape. */
+html.pulse-window,
+html.pulse-window body,
+html.reminder-window,
+html.reminder-window body,
+html.widget-window,
+html.widget-window body {
+  background: transparent;
+}
+
+html.widget-window body {
+  overflow: hidden;
+}
+
+html.summary-window,
+html.summary-window body {
+  background: transparent;
+  overflow: hidden;
+}
+
+.floating-widget {
+  display: flex;
+  flex-direction: column;
+  width: 420px;
+  height: 54px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--bg-bar) 96%, var(--accent)) 0%,
+      var(--bg-bar) 58%
+    ),
+    var(--bg-bar);
+  box-shadow:
+    0 18px 42px color-mix(in srgb, var(--bg-inset) 75%, transparent),
+    0 2px 8px color-mix(in srgb, var(--accent) 10%, transparent),
+    inset 0 1px color-mix(in srgb, var(--fg) 10%, transparent);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  -webkit-app-region: drag;
+}
+
+.floating-widget.is-expanded {
+  height: 320px;
+  border-radius: 20px;
+}
+
+.widget-header {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 54px;
+  flex: 0 0 54px;
+  padding: 0 6px 0 12px;
+}
+
+.widget-presence {
+  display: flex;
+  min-width: 132px;
+  align-items: center;
+  gap: 9px;
+}
+
+.widget-presence-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.widget-presence-copy strong {
+  overflow: hidden;
+  max-width: 118px;
+  color: var(--fg-strong);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-pulse {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.widget-pulse.is-active {
+  animation: widget-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes widget-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+}
+
+.widget-time-block {
+  display: flex;
+  min-width: 61px;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.widget-time {
+  display: block;
+  color: var(--accent);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.widget-divider {
+  margin: 0 12px;
+  height: 30px;
+  width: 1px;
+  flex: 0 0 1px;
+  background: var(--line-strong);
+}
+
+.widget-stat {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 67px;
+  line-height: 1;
+}
+
+.widget-stat strong {
+  margin-top: 4px;
+  color: var(--fg-strong);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+}
+
+.widget-label {
+  color: var(--fg-faint);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.1;
+}
+
+.widget-progress {
+  min-width: 62px;
+}
+
+.widget-session-action,
+.widget-expand {
+  flex: 0 0 auto;
+  color: var(--fg-soft);
+}
+
+.widget-session-action:hover,
+.widget-expand:hover {
+  background: var(--bg-surface-1);
+  color: var(--fg-strong);
+}
+
+.widget-session-action {
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.widget-session-action:hover {
+  background: color-mix(in srgb, var(--accent-soft) 75%, var(--accent));
+  color: var(--fg-strong);
+}
+
+.widget-expanded {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+  padding: 11px 14px 13px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-surface-1) 88%, var(--bg-bar));
+  -webkit-app-region: no-drag;
+}
+
+.widget-hero {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-surface-2) 55%, transparent);
+}
+
+.widget-hero > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.widget-hero > div:first-child strong {
+  color: var(--fg-strong);
+  font-size: 13px;
+  letter-spacing: -0.03em;
+}
+
+.widget-hero-progress {
+  grid-column: 1 / -1;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-inset-soft);
+}
+
+.widget-hero-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 220ms ease;
+}
+
+.widget-hero-goal {
+  color: var(--accent);
+  font-size: 16px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.widget-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.widget-section-label {
+  color: var(--fg-faint);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.widget-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.widget-section-hint {
+  color: var(--fg-faint);
+  font-size: 9px;
+}
+
+.widget-session-controls,
+.widget-timer-list {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.widget-session-controls > [data-slot="button"] {
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 5px;
+  font-size: 10px;
+}
+
+.widget-timer-list {
+  flex-direction: column;
+  gap: 3px;
+}
+
+.widget-timer-row {
+  display: flex;
+  align-items: center;
+  min-height: 27px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--bg-inset-soft);
+}
+
+.widget-timer-row.is-running {
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+  background: var(--accent-soft);
+}
+
+.widget-timer-name {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.widget-timer-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-timer-name strong {
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.widget-timer-row [data-slot="button"] {
+  margin-right: 2px;
+}
+
+.widget-error {
+  margin: 0;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-open {
+  align-self: stretch;
+  width: 40px;
+  height: 42px;
+  margin-left: 2px;
+  border-left: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--fg-soft);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.widget-open:hover {
+  background: var(--bg-surface-1);
+  color: var(--fg-strong);
+}
+
+/* Calendar block states (see the design board, D1). */
+@keyframes entry-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Slim scrollbars across the app (reduced thickness by half) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--line-strong);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--fg-soft);
+}
+
+.calendar-view,
+.calendar-view * {
+  scrollbar-width: none;
+}
+
+.calendar-view::-webkit-scrollbar,
+.calendar-view *::-webkit-scrollbar {
+  display: none;
+}
+
+.entry-processing {
+  background-image: linear-gradient(
+    90deg,
+    var(--bg-surface-1) 0%,
+    var(--bg-surface-2) 50%,
+    var(--bg-surface-1) 100%
+  );
+  background-size: 200% 100%;
+  animation: entry-shimmer 1.6s linear infinite;
+}
+
+/* The recording session's now line: a soft ring breathing off its dots. */
+@keyframes recording-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 55%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--danger) 0%, transparent);
+  }
+}
+
+.recording-dot {
+  animation: recording-pulse 1.8s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .entry-processing,
+  .recording-dot {
+    animation: none;
+  }
+}
+
+/* Settings → auto-accept threshold. The track fill is an inline gradient. */
+.threshold-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: var(--accent);
+  border: 3px solid var(--bg-panel);
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.threshold-range:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+/* The settings surface opts out of the app-wide gradient and mono body type. */
+.settings-page {
+  font-family: var(--font-sans);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.settings-nav-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  border-radius: 0.55rem;
+  padding: 0.55rem 0.625rem;
+  color: var(--fg-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.settings-nav-item:hover:not(.settings-nav-item-active) {
+  background: var(--bg-surface-1);
+  color: var(--fg-strong);
+}
+
+.settings-nav-item-active {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--fg-strong);
+}
+
+.settings-nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.settings-nav-subitems {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border-left: 1px solid var(--line);
+  margin-left: 0.625rem;
+  padding-left: 0.625rem;
+}
+
+.settings-section-heading h2 {
+  position: relative;
+  display: table;
+  padding-bottom: 0.35rem;
+  line-height: 1.25;
+}
+
+.settings-section-heading h2::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  content: "";
+}
+
+.settings-group-card {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.035);
+}
+
+@media (max-width: 720px) {
+  .settings-layout {
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+    max-height: 8.5rem;
+    flex: 0 0 auto;
+    gap: 0.5rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 0.5rem 0.75rem;
+  }
+
+  .settings-nav > .settings-nav-item,
+  .settings-nav-group > .settings-nav-item {
+    width: auto;
+    min-width: 7rem;
+    flex: 0 0 auto;
+    justify-content: center;
+    white-space: nowrap;
+  }
+
+  .settings-nav-group {
+    flex-direction: row;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .settings-nav-subitems {
+    flex-direction: row;
+    border-left: 0;
+    margin-left: 0;
+    padding-left: 0;
+    gap: 0.5rem;
+  }
+
+  .settings-nav-subitems > .settings-nav-item {
+    width: auto;
+    min-width: 5rem;
+    flex: 0 0 auto;
+    justify-content: center;
+    white-space: nowrap;
+  }
+
+  .settings-content {
+    --gutter: 1rem;
+    padding: 1rem;
+  }
+
+  .setting-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+
+  .setting-row > :last-child {
+    align-self: flex-start;
+    max-width: 100%;
+  }
+
+  .settings-inline-note,
+  .settings-day-row {
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+  }
+
+  .settings-day-row > label {
+    min-width: 6rem;
+  }
+
+  .settings-battery-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settings-battery-row > :last-child {
+    align-self: flex-start;
+    text-align: left;
+  }
+
+  .settings-energy-legend,
+  .settings-energy-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-nav-item {
+    transition: none;
+  }
+}
+
+/*
+ * Sharper shape. Rounded keeps the spaced, rounded cards; Sharper turns each
+ * panel into an edge-to-edge band split by plain dividers, with no gap between
+ * them. A page opts a panel in with one of these classes, and every rule below
+ * is unlayered so it wins over the panel's own utilities.
+ *
+ *   shape-bleed        a panel that spans the page gutters (the px-5 of <main>)
+ *   shape-bleed-table  the same, for a table or list whose rows pad themselves
+ *                      (their header fills should reach the edges)
+ *   shape-top          a band that opens the page, flush under the header line
+ *   shape-strip        a grid of shape-cell panels fused into one divided band
+ *   shape-cell         one cell of a strip
+ *   shape-narrow-rows  a strip whose cells stack below 64rem (-xl: 80rem): divide them by row
+ *   shape-stack        a column of panels: the gaps between them close up
+ *   shape-group        a wrapper of bands that follows a band: they fuse across it
+ *   shape-one-col      a grid of panels that stacks into one column of bands
+ */
+:root {
+  --gutter: 1.25rem;
+}
+
+:root[data-shape="sharper"] .shape-bleed,
+:root[data-shape="sharper"] .shape-bleed-table,
+:root[data-shape="sharper"] .shape-strip {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:root[data-shape="sharper"] .shape-bleed {
+  border-style: solid;
+}
+
+/* Fused bands share one divider rather than stacking two borders. */
+:root[data-shape="sharper"]
+  :is(.shape-bleed, .shape-bleed-table, .shape-strip)
+  + :is(.shape-bleed, .shape-bleed-table, .shape-strip) {
+  margin-top: 0;
+  border-top-width: 0;
+}
+
+:root[data-shape="sharper"] :is(.shape-bleed, .shape-bleed-table, .shape-strip) + .shape-group {
+  margin-top: 0;
+}
+
+:root[data-shape="sharper"]
+  :is(.shape-bleed, .shape-bleed-table, .shape-strip)
+  + .shape-group
+  > :first-child {
+  margin-top: 0;
+  border-top-width: 0;
+}
+
+/* A grid of panels that sharper stacks into one column of bands. */
+:root[data-shape="sharper"] .shape-one-col {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+:root[data-shape="sharper"] .shape-stack {
+  gap: 0;
+  row-gap: 0;
+}
+
+:root[data-shape="sharper"] .shape-stack > * {
+  margin-block: 0;
+}
+
+:root[data-shape="sharper"] .shape-strip {
+  gap: 0;
+  padding-inline: 0;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+:root[data-shape="sharper"] .shape-cell {
+  border-width: 0;
+  border-radius: 0;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+:root[data-shape="sharper"] .shape-cell + .shape-cell {
+  border-left: 1px solid var(--line);
+}
+
+@media (max-width: 63.999rem) {
+  :root[data-shape="sharper"] .shape-narrow-rows > .shape-cell + .shape-cell {
+    border-left-width: 0;
+    border-top: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 79.999rem) {
+  :root[data-shape="sharper"] .shape-narrow-rows-xl > .shape-cell + .shape-cell {
+    border-left-width: 0;
+    border-top: 1px solid var(--line);
+  }
+}
+
+/* A selected cell keeps its accent as a bar, since its ring is gone. */
+:root[data-shape="sharper"] .shape-cell[aria-pressed="true"] {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}

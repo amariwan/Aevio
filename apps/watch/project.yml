@@ -1,0 +1,32 @@
+name: AevioWatch
+options:
+  bundleIdPrefix: com.offlinestudios
+  deploymentTarget:
+    watchOS: "10.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+schemes:
+  AevioWatch:
+    build:
+      targets:
+        AevioWatch: all
+    run:
+      config: Debug
+targets:
+  AevioWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: AevioWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.offlinestudios.aevio.watchkitapp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_WKWatchKitApp: YES
+        INFOPLIST_KEY_WKWatchOnly: YES
+        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: true
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Aevio uses your local network to control the Mac app from Apple Watch.
+      configs:
+        Debug:
+          CODE_SIGNING_ALLOWED: NO

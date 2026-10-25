@@ -1,0 +1,32 @@
+[package]
+name = "aevio-services"
+version = "0.9.39"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+aevio-application = { path = "../aevio-application" }
+aevio-contracts = { path = "../aevio-contracts" }
+aevio-core = { path = "../aevio-core" }
+aevio-persistence = { path = "../aevio-persistence" }
+anyhow = "1"
+argon2 = "0.5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures-lite = "2"
+rand_core = { version = "0.6", features = ["getrandom"] }
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "system-proxy"] }
+url = "2"
+sea-orm-sync = { version = "2.0.4", default-features = false, features = ["sync", "macros", "rusqlite", "postgres-array", "sqlite-use-returning-for-3_35"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "time"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+wasmtime = { version = "38.0.4", default-features = false, features = ["cranelift", "runtime"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+tempfile = "3.27.0"
+wat = "1"

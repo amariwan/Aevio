@@ -1,0 +1,53 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log**
+lerna-debug.log*
+
+node_modules
+.next
+out
+*.local
+target
+.turbo
+
+# Editor directories and files
+.lavish/
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Swift sidecar build output (built by src-tauri/build.rs)
+src-tauri/swift/.build
+src-tauri/binaries
+apps/desktop/tauri/swift/.build
+apps/desktop/tauri/binaries
+*.tsbuildinfo
+
+# Apple platform build artifacts
+**/build/
+**/xcuserdata/
+*.xcuserstate
+
+# Agent worktrees
+.claude/worktrees/
+
+# Derived knowledge index
+.aevio-knowledge.db
+.projectatlas/
+.project-brain/
+
+# Klock changes to port here (sync-klock skill)
+FROM_KLOCK.md
+
+# Derived graphify output (regenerable)
+graphify-out/

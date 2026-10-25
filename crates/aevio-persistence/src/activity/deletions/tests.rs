@@ -1,0 +1,426 @@
+use super::ActivityStore;
+use rusqlite::{Connection, params};
+
+fn store() -> ActivityStore {
+    let store = ActivityStore::from_conn(Connection::open_in_memory().unwrap()).unwrap();
+    store.conn().execute_batch(
+        "INSERT INTO categories (id,name,color,created_at,updated_at) VALUES ('c','Work','green',1,1);
+         INSERT INTO projects (id,name,color,created_at,updated_at) VALUES ('p','Project','blue',1,1);
+         INSERT INTO time_entries (id,started_at,ended_at,description,category_id,project_id,created_at,updated_at,source) VALUES
+           ('a',100,200,'First','c','p',1,1,'manual'), ('b',200,300,'Shared','c','p',1,1,'manual');
+         INSERT INTO segments (id,app,title,kind,started_at,ended_at,entry_id) VALUES (1,'Editor','First','activity',100,200,'a');
+         INSERT INTO rules (id,match_kind,pattern,category_id,project_id,created_at,updated_at) VALUES ('r','app','Editor','c','p',1,1);
+         INSERT INTO apps (id,kind,identifier,display_name,default_category_id,default_project_id,first_seen,last_seen,created_at,updated_at) VALUES ('app','native','editor','Editor','c','p',1,1,1,1);"
+    ).unwrap();
+    store
+}
+
+fn count(store: &ActivityStore, sql: &str) -> i64 {
+    store.conn().query_row(sql, [], |row| row.get(0)).unwrap()
+}
+
+#[test]
+fn deleting_an_entry_removes_only_the_entry_and_its_activity() {
+    let mut store = store();
+    store
+        .delete_time_entries(&["a".into(), "a".into()], 400)
+        .unwrap();
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        1
+    );
+    // The sibling and the catalog around it are untouched.
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL AND category_id='c' AND project_id='p'"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM categories WHERE id='c' AND archived=0 AND deleted_at IS NULL"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM projects WHERE id='p' AND deleted_at IS NULL"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM rules WHERE id='r' AND deleted_at IS NULL"
+        ),
+        1
+    );
+    assert_eq!(
+        count(&store, "SELECT count(*) FROM segments WHERE entry_id='a'"),
+        0
+    );
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM apps WHERE default_category_id='c' AND default_project_id='p'"
+        ),
+        1
+    );
+    assert!(store.undo(500).map(|step| step.is_some()).unwrap());
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM segments WHERE entry_id='a' AND ended_at=200"
+        ),
+        1
+    );
+    assert!(!store.undo(501).map(|step| step.is_some()).unwrap());
+    assert!(store.redo(600).map(|step| step.is_some()).unwrap());
+    assert_eq!(
+        count(&store, "SELECT count(*) FROM segments WHERE entry_id='a'"),
+        0
+    );
+    assert!(store.undo(700).map(|step| step.is_some()).unwrap());
+    assert_eq!(
+        count(&store, "SELECT count(*) FROM segments WHERE entry_id='a'"),
+        1
+    );
+}
+
+#[test]
+fn categories_and_projects_delete_independently_and_undo_in_order() {
+    let mut store = store();
+    store.delete_category("c", 400).unwrap();
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL AND category_id IS NULL AND project_id='p'"
+        ),
+        2
+    );
+    store.delete_project("p", 500).unwrap();
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL AND project_id IS NULL"
+        ),
+        2
+    );
+    store.undo(600).map(|step| step.is_some()).unwrap();
+    store.undo(700).map(|step| step.is_some()).unwrap();
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL AND category_id='c' AND project_id='p'"
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM rules WHERE id='r' AND deleted_at IS NULL"
+        ),
+        1
+    );
+}
+
+#[test]
+fn invoiced_time_blocks_the_entire_deletion_atomically() {
+    let mut store = store();
+    store.conn().execute_batch("INSERT INTO invoices (id,client_id,client_name,currency,status,created_at,updated_at) VALUES ('invoice','client','Client','USD','draft',1,1); UPDATE time_entries SET invoice_id='invoice' WHERE id='b';").unwrap();
+    assert!(
+        store
+            .delete_time_entries(&["a".into(), "b".into()], 400)
+            .is_err()
+    );
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL AND category_id='c' AND project_id='p'"
+        ),
+        2
+    );
+    assert_eq!(
+        count(&store, "SELECT count(*) FROM segments WHERE entry_id='a'"),
+        1
+    );
+    assert!(!store.undo(500).map(|step| step.is_some()).unwrap());
+}
+
+#[test]
+fn undo_preserves_description_edits_and_new_deletion_clears_redo() {
+    let mut store = store();
+    store.delete_category("c", 400).unwrap();
+    store
+        .conn()
+        .execute(
+            "UPDATE time_entries SET description=?1 WHERE id='b';",
+            ["Edited later"],
+        )
+        .unwrap();
+    store.undo(500).map(|step| step.is_some()).unwrap();
+    let text: String = store
+        .conn()
+        .query_row(
+            "SELECT description FROM time_entries WHERE id='b'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(text, "Edited later");
+    store.delete_project("p", 600).unwrap();
+    assert!(!store.redo(700).map(|step| step.is_some()).unwrap());
+}
+
+#[test]
+fn conflicting_link_edit_rolls_back_undo_without_losing_history() {
+    let mut store = store();
+    store.delete_category("c", 400).unwrap();
+    store
+        .conn()
+        .execute(
+            "UPDATE time_entries SET category_id=?1 WHERE id='b';",
+            ["another"],
+        )
+        .unwrap();
+    assert!(store.undo(500).map(|step| step.is_some()).is_err());
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE id='a' AND category_id IS NULL"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM categories WHERE id='c' AND deleted_at IS NULL"
+        ),
+        0
+    );
+    store
+        .conn()
+        .execute("UPDATE time_entries SET category_id=NULL WHERE id='b';", [])
+        .unwrap();
+    assert!(store.undo(600).map(|step| step.is_some()).unwrap());
+}
+
+#[test]
+fn redo_refuses_new_or_edited_activity_without_losing_history() {
+    for change in [
+        "INSERT INTO segments (id,app,title,kind,started_at,ended_at,entry_id) VALUES (2,'Editor','Later','activity',500,600,'a');",
+        "UPDATE segments SET title='Edited later' WHERE id=1;",
+    ] {
+        let mut store = store();
+        store.delete_time_entry("a", 400).unwrap();
+        store.undo(500).map(|step| step.is_some()).unwrap();
+        store.conn().execute_batch(change).unwrap();
+        assert!(store.redo(600).map(|step| step.is_some()).is_err());
+        assert_eq!(
+            count(
+                &store,
+                "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL AND category_id='c' AND project_id='p'"
+            ),
+            2
+        );
+        store
+            .conn()
+            .execute_batch(
+                "DELETE FROM segments WHERE id=2; UPDATE segments SET title='First' WHERE id=1;",
+            )
+            .unwrap();
+        assert!(store.redo(700).map(|step| step.is_some()).unwrap());
+    }
+}
+
+#[test]
+fn restored_live_activity_is_closed_and_does_not_recreate_deleted_time() {
+    let mut store = store();
+    store
+        .conn()
+        .execute("UPDATE segments SET ended_at=NULL WHERE id=?1", params![1])
+        .unwrap();
+    store.delete_time_entry("a", 400).unwrap();
+    store.rebuild_time_entries_in_range(0, 1000, 450).unwrap();
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        1
+    );
+    store.undo(500).map(|step| step.is_some()).unwrap();
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM segments WHERE id=1 AND ended_at=400"
+        ),
+        1
+    );
+}
+
+#[test]
+fn split_and_undo_redo_round_trip() {
+    let mut store = store();
+    let (first, second) = store.split_time_entry("a", 150, 400).unwrap();
+    assert_eq!(first.ended_at, 150);
+    assert_eq!(second.started_at, 150);
+    assert_eq!(second.ended_at, 200);
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        3
+    );
+
+    // Undo the split
+    assert!(store.undo(500).map(|step| step.is_some()).unwrap());
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        2
+    );
+    let a_end: i64 = store
+        .conn()
+        .query_row("SELECT ended_at FROM time_entries WHERE id='a'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(a_end, 200);
+
+    // Redo the split
+    assert!(store.redo(600).map(|step| step.is_some()).unwrap());
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        3
+    );
+    let a_end_split: i64 = store
+        .conn()
+        .query_row("SELECT ended_at FROM time_entries WHERE id='a'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(a_end_split, 150);
+}
+
+#[test]
+fn merge_and_undo_redo_round_trip() {
+    let mut store = store();
+    // 'a' is 100..200, 'b' is 200..300. They share border 200.
+    let merged = store.merge_time_entries("a", "b", 400).unwrap();
+    assert_eq!(merged.started_at, 100);
+    assert_eq!(merged.ended_at, 300);
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        1
+    );
+
+    // Undo the merge
+    assert!(store.undo(500).map(|step| step.is_some()).unwrap());
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        2
+    );
+    let a_end: i64 = store
+        .conn()
+        .query_row("SELECT ended_at FROM time_entries WHERE id='a'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let b_start: i64 = store
+        .conn()
+        .query_row(
+            "SELECT started_at FROM time_entries WHERE id='b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(a_end, 200);
+    assert_eq!(b_start, 200);
+
+    // Redo the merge
+    assert!(store.redo(600).map(|step| step.is_some()).unwrap());
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        1
+    );
+}
+
+#[test]
+fn add_and_undo_redo_round_trip() {
+    let mut store = store();
+    let new_entry = aevio_core::models::NewTimeEntry {
+        started_at: 500,
+        ended_at: 600,
+        description: "Added".to_string(),
+        category_id: None,
+        project_id: None,
+        billable: None,
+        review: true,
+    };
+    let created = store.create_manual_entry(new_entry, 400).unwrap();
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        3
+    );
+
+    // Undo the add
+    assert!(store.undo(500).map(|step| step.is_some()).unwrap());
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        2
+    );
+
+    // Redo the add
+    assert!(store.redo(600).map(|step| step.is_some()).unwrap());
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM time_entries WHERE deleted_at IS NULL"
+        ),
+        3
+    );
+    let created_deleted: Option<i64> = store
+        .conn()
+        .query_row(
+            "SELECT deleted_at FROM time_entries WHERE id=?1",
+            params![created.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(created_deleted, None);
+}

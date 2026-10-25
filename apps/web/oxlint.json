@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "rules": {
+    "noRestrictedImports": {
+      "level": "error",
+      "options": {
+        "patterns": [
+          {
+            "group": ["../**"],
+            "message": "Internal imports must use the @/ alias, not relative parent paths."
+          }
+        ]
+      }
+    }
+  },
+  "ignorePatterns": ["node_modules/**", ".next/**", "out/**"]
+}

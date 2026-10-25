@@ -1,0 +1,49 @@
+{
+  "name": "aevio",
+  "private": true,
+  "version": "0.9.39",
+  "packageManager": "bun@1.4.3",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bash scripts/dev-app.sh",
+    "dev:web": "turbo dev",
+    "build": "turbo build",
+    "typecheck": "turbo typecheck",
+    "verify": "bash scripts/verify.sh",
+    "fix": "bash scripts/verify.sh --fix",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "apps/web/**/*.{ts,tsx}": [
+      "bunx oxlint --fix",
+      "bunx oxfmt --write"
+    ]
+  },
+  "devDependencies": {
+    "@next/bundle-analyzer": "^16.4.3",
+    "@tauri-apps/cli": "^2.12.4",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "oxfmt": "^0.74.0",
+    "oxlint": "^1.89.0",
+    "react-devtools": "^8.0.0",
+    "turbo": "^2.11.10",
+    "typescript": "~6.0.3"
+  },
+  "dependencies": {
+    "@sentry/nextjs": "^11.9.0",
+    "@tanstack/react-form": "^1.33.5",
+    "@tanstack/react-query": "^5.104.5",
+    "@tanstack/react-table": "^9.3.1",
+    "@tauri-apps/plugin-notification": "^2.7.0",
+    "dice-ui": "^0.1.1",
+    "kbar": "^1.0.0",
+    "nuqs": "^2.10.2",
+    "recharts": "^3.10.1",
+    "zod": "^4.6.7",
+    "zustand": "^5.0.16"
+  }
+}

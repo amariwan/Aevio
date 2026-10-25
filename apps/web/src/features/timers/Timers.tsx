@@ -1,0 +1,113 @@
+import { useEffect, useState } from "react";
+import { useI18n } from "@/hooks/useI18n";
+import { EmptyState, InlineError, PageHeader, SkeletonRows } from "@/components/layout/Page";
+import { useCatalog } from "@/hooks/useCatalog";
+import { elapsedMs, formatDuration } from "@/lib/timers";
+import { StopwatchCard } from "./components/StopwatchCard";
+import { type TimersApi, useTimers } from "./hooks/useTimers";
+
+interface TimersProps {
+  api?: TimersApi;
+  revealTimer?: { id: string };
+}
+
+export function Timers({ api: propApi, revealTimer }: TimersProps = {}) {
+  const { t } = useI18n();
+  const defaultApi = useTimers();
+  const api = propApi ?? defaultApi;
+  const catalog = useCatalog();
+  const [label, setLabel] = useState("");
+  const trimmed = label.trim();
+
+  // Wait for the timer list before revealing a request from the hidden app.
+  useEffect(() => {
+    if (!revealTimer || api.loading) return;
+    const element = document.getElementById(`timer-${revealTimer.id}`);
+    element?.scrollIntoView({ block: "center" });
+    element?.focus({ preventScroll: true });
+  }, [revealTimer, api.loading]);
+
+  const submit = (): void => {
+    if (trimmed.length === 0) return;
+    api.create(trimmed);
+    setLabel("");
+  };
+
+  const runningCount = api.timers.filter((timer) => timer.startedAt !== null).length;
+  const totalMs = api.timers.reduce((sum, timer) => sum + elapsedMs(timer, api.now), 0);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-canvas text-fg">
+      <PageHeader title="Stopwatches">
+        <div className="flex items-center gap-4 font-mono text-[12px]">
+          <div className="flex items-center gap-1.5">
+            <span className="font-semibold text-accent">{runningCount}</span>
+            <span className="text-fg-faint">running</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="font-semibold text-fg-strong">{formatDuration(totalMs)}</span>
+            <span className="text-fg-faint">total</span>
+          </div>
+        </div>
+      </PageHeader>
+
+      <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit();
+          }}
+          className="flex gap-2.5"
+        >
+          <input
+            value={label}
+            placeholder={t("timers.whatWorking")}
+            aria-label="New tracker name"
+            onChange={(event) => setLabel(event.target.value)}
+            className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-3.5 py-2 text-[13px] text-fg placeholder:text-fg-faint outline-none focus:border-accent"
+          />
+          <button
+            type="submit"
+            disabled={trimmed.length === 0}
+            className="shrink-0 rounded-lg bg-accent px-4 py-2 text-[13px] font-semibold text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            New tracker
+          </button>
+        </form>
+
+        {api.error !== null && <InlineError message={api.error} />}
+
+        {api.loading && api.timers.length === 0 ? (
+          <SkeletonRows rows={3} />
+        ) : api.timers.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-line p-8">
+            <EmptyState
+              title="No stopwatches yet"
+              hint="Name one above and it starts counting when you press Start."
+            />
+          </div>
+        ) : (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3">
+            {api.timers.map((timer) => (
+              <StopwatchCard
+                key={timer.id}
+                timer={timer}
+                now={api.now}
+                onStart={api.start}
+                onPause={api.pause}
+                onReset={api.reset}
+                onRename={api.rename}
+                onAddSegment={api.addSegment}
+                onUpdateSegment={api.updateSegment}
+                onDeleteSegment={api.deleteSegment}
+                onDelete={api.remove}
+                categories={catalog.categories}
+                projects={catalog.projects}
+              />
+            ))}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

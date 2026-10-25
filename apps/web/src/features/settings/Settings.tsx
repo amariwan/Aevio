@@ -1,0 +1,1711 @@
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ConfirmDialog } from "@/components/primitives/ConfirmDialog";
+import { Picker } from "@/components/primitives/Picker";
+import {
+  SegmentedControl,
+  type SegmentedOption,
+  Toggle,
+} from "@/components/primitives/SegmentedControl";
+import { Tooltip } from "@/components/primitives/Tooltip";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  AiEffectiveness,
+  PersonalModels,
+  ThresholdSlider,
+} from "@/features/ai/components/AiLearning";
+import { DecisionModelsSettings } from "@/features/ai/components/DecisionModelsSettings";
+import { useAiMetrics } from "@/features/ai/hooks/useAiMetrics";
+import { llmUnavailableReason, useAiStatus } from "@/features/ai/hooks/useAiStatus";
+import { useEnergy } from "@/hooks/useEnergy";
+import { useI18n } from "@/hooks/useI18n";
+import { useSettings } from "@/hooks/useSettings";
+import * as api from "@/lib/api";
+import { describeError } from "@/lib/api";
+import { formatShortDate } from "@/lib/format";
+import {
+  FILE_MANAGER,
+  OS_NAME,
+  PLATFORM,
+  shortcutLabel,
+  THIS_COMPUTER,
+  TRAY_ICON,
+  TRAY_PLACE,
+} from "@/lib/platform";
+import {
+  PALETTES,
+  PALETTE_ORDER,
+  type AiSuggest,
+  type CloseBehavior,
+  type DaySchedule,
+  isInsideTrackingHours,
+  type LoginItemState,
+  type Language,
+  type Mode,
+  type Settings as SettingsType,
+  type Shape,
+  type SizeMode,
+  type TrackingHours,
+} from "@/lib/settings";
+import type { AiStatus, PermissionInfo, ReleaseNotes, Route, UpdateStatus } from "@/lib/types";
+import { PluginStore } from "@/features/plugin-store";
+import { Integrations } from "@/features/integrations";
+import { BatteryEnergyMonitor } from "./components/BatteryEnergyMonitor";
+import { BreakSettingsGroups } from "./components/BreakSettings";
+import { Select, SettingBlock, SettingGroup, SettingRow } from "./components/SettingParts";
+
+const MODE_OPTIONS: SegmentedOption<Mode>[] = [
+  { value: "system", label: "System" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+const SHAPE_OPTIONS: SegmentedOption<Shape>[] = [
+  { value: "rounded", label: "Rounded" },
+  { value: "sharper", label: "Sharper" },
+];
+
+const SIZE_OPTIONS: SegmentedOption<SizeMode>[] = [
+  { value: "compact", label: "Compact" },
+  { value: "normal", label: "Normal" },
+  { value: "relaxed", label: "Relaxed" },
+  { value: "veryRelaxed", label: "Very Relaxed" },
+];
+
+const CLOSE_OPTIONS: SegmentedOption<CloseBehavior>[] = [
+  { value: "hide", label: `Hide to ${TRAY_PLACE}` },
+  { value: "quit", label: "Quit" },
+];
+
+const SUGGEST_OPTIONS: SegmentedOption<AiSuggest>[] = [
+  { value: "category", label: "Category" },
+  { value: "categoryProject", label: "Category + Project" },
+];
+
+const METRIC_RANGES: SegmentedOption<number>[] = [
+  { value: 7, label: "7d" },
+  { value: 30, label: "30d" },
+  { value: 90, label: "90d" },
+];
+
+type SettingsSection =
+  | "overview"
+  | "appearance"
+  | "general"
+  | "tracking"
+  | "suggestions"
+  | "data"
+  | "notifications"
+  | "pluginStore"
+  | "integrations"
+  | "ai"
+  | "advanced";
+
+const SETTINGS_SECTIONS: readonly SettingsSection[] = [
+  "overview",
+  "appearance",
+  "general",
+  "tracking",
+  "suggestions",
+  "data",
+  "notifications",
+  "pluginStore",
+  "integrations",
+  "ai",
+  "advanced",
+];
+
+/** The sections under the Advanced settings group in the nav. */
+const ADVANCED_SECTIONS: readonly SettingsSection[] = ["ai", "advanced"];
+
+function isAdvancedSection(section: SettingsSection): boolean {
+  return ADVANCED_SECTIONS.includes(section);
+}
+
+function parseAdvancedSection(value: string | null | undefined): boolean {
+  return ADVANCED_SECTIONS.some((section) => section === value);
+}
+
+function parseSettingsSection(value: string | null): SettingsSection | null {
+  if (value === "plugins" || value === "extensions") return "pluginStore";
+  return SETTINGS_SECTIONS.find((section) => section === value) ?? null;
+}
+
+interface SettingsNavItem {
+  id: SettingsSection;
+  label: string;
+}
+
+const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
+  { id: "appearance", label: "Appearance" },
+  { id: "general", label: "General" },
+  { id: "tracking", label: "Tracking & work" },
+  { id: "suggestions", label: "Suggestions" },
+  { id: "data", label: "Data & storage" },
+  { id: "notifications", label: "Notifications" },
+  { id: "pluginStore", label: "Plugin Store" },
+  { id: "integrations", label: "Integrations" },
+];
+
+/** One line on which tiers are running and why. */
+function engineSummary(status: AiStatus | null): string {
+  if (status === null || status.engine === "starting") {
+    return "Starting the on-device models…";
+  }
+  if (status.engine === "full") {
+    return "Rules, your personal model, and Apple's on-device model";
+  }
+  if (status.engine === "fallback") {
+    return `Using rules and your personal model only. ${llmUnavailableReason(status) ?? ""}.`;
+  }
+  return "Using your rules only: on-device ML isn't available in this build";
+}
+
+/** 10–60 hours a week in steps of 5, plus a saved value off that grid. */
+function targetOptions(current: number): { value: number; label: string }[] {
+  const values = new Set([current]);
+  for (let hours = 10; hours <= 60; hours += 5) values.add(hours);
+  return [...values]
+    .sort((a, b) => a - b)
+    .map((hours) => ({ value: hours, label: `${hours}h a week` }));
+}
+
+const RETENTION_OPTIONS = [
+  { value: 0, label: "Forever" },
+  { value: 7, label: "7 days" },
+  { value: 30, label: "30 days" },
+] satisfies { value: number; label: string }[];
+
+function SettingsSectionHeading({ title, description }: { title: string; description: string }) {
+  return (
+    <header className="settings-section-heading border-b border-line pb-3">
+      <h2 className="font-sans text-[20px] font-semibold tracking-tight text-fg-strong">{title}</h2>
+      <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">{description}</p>
+    </header>
+  );
+}
+
+const LOGIN_ITEMS_SETTINGS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
+
+/**
+ * Mirrors macOS's login item rather than a stored preference: it is re-read
+ * whenever the window regains focus, because the user can switch it off in
+ * System Settings behind the app's back.
+ */
+function LaunchAtLoginRow({ onError }: { onError: (message: string | null) => void }) {
+  const [state, setState] = useState<LoginItemState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const read = (): void => {
+      api
+        .launchAtLogin()
+        .then(setState)
+        .catch((cause: unknown) => onError(describeError(cause)));
+    };
+    read();
+    window.addEventListener("focus", read);
+    return () => window.removeEventListener("focus", read);
+  }, [onError]);
+
+  const change = (enabled: boolean): void => {
+    setBusy(true);
+    onError(null);
+    api
+      .setLaunchAtLogin(enabled)
+      .then(setState)
+      .catch((cause: unknown) => onError(describeError(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  const pending = state === "requiresApproval";
+  return (
+    <SettingRow
+      title="Launch at login"
+      description={
+        state === "unsupported"
+          ? PLATFORM === "macos"
+            ? "Needs macOS 13 or later"
+            : `Not available on ${OS_NAME} yet`
+          : pending
+            ? "Allow Aevio under Login Items in System Settings to finish"
+            : "Start Aevio in the background when you log in"
+      }
+    >
+      <div className="flex shrink-0 items-center gap-3">
+        {pending && (
+          <button
+            type="button"
+            onClick={() => {
+              openUrl(LOGIN_ITEMS_SETTINGS).catch((cause: unknown) =>
+                onError(describeError(cause)),
+              );
+            }}
+            className="rounded-md border border-line px-2.5 py-1 text-[11.5px] text-fg-muted transition-colors hover:bg-surface hover:text-fg"
+          >
+            Open Login Items
+          </button>
+        )}
+        <Toggle
+          checked={state === "enabled" || pending}
+          label="Launch at login"
+          disabled={state === null || state === "unsupported" || busy}
+          onChange={change}
+        />
+      </div>
+    </SettingRow>
+  );
+}
+
+function WatchPairingCard({ onError }: { onError: (message: string | null) => void }) {
+  const { t } = useI18n();
+  const [pairing, setPairing] = useState<api.WatchPairingInfo | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    api
+      .watchPairing()
+      .then(setPairing)
+      .catch((cause: unknown) => onError(describeError(cause)));
+  }, [onError]);
+
+  const copyToken = async (): Promise<void> => {
+    if (!pairing) return;
+    try {
+      await navigator.clipboard.writeText(pairing.token);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch (cause: unknown) {
+      onError(describeError(cause));
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("settings.appleWatch")}</CardTitle>
+        <CardDescription>
+          Pair the independent Aevio Watch app with this Mac over your local network.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <p className="text-xs text-fg-muted">
+          Enter this token and the Mac&apos;s local hostname or IP address in the Watch app. Aevio
+          listens on port {pairing?.port ?? 48731}.
+        </p>
+        <div className="flex items-center gap-2">
+          <code className="min-w-0 flex-1 truncate rounded-md border border-line bg-surface px-3 py-2 text-xs text-fg-strong">
+            {pairing?.token ?? "Loading pairing token…"}
+          </code>
+          <Button type="button" variant="outline" size="sm" onClick={() => void copyToken()}>
+            {copied ? "Copied" : "Copy"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const APPLE_INTELLIGENCE_SETTINGS = "x-apple.systempreferences:com.apple.Siri-Settings.extension";
+
+function AppleIntelligenceRow({
+  status,
+  onError,
+}: {
+  status: AiStatus | null;
+  onError: (message: string | null) => void;
+}) {
+  const isAvailable = status?.llm === "available";
+  const isOff = status?.llm === "appleIntelligenceNotEnabled";
+  const isModelDownloading = status?.llm === "modelNotReady";
+  const isUnsupported = status?.llm === "unsupportedOS" || status?.llm === "deviceNotEligible";
+
+  const handleOpenSettings = (): void => {
+    onError(null);
+    if (status?.llm === "unsupportedOS") {
+      onError("Apple Intelligence requires macOS 15.1 or later.");
+      return;
+    }
+    if (status?.llm === "deviceNotEligible") {
+      onError("This Mac does not support Apple Intelligence.");
+      return;
+    }
+    openUrl(APPLE_INTELLIGENCE_SETTINGS).catch((cause: unknown) => {
+      onError(describeError(cause));
+    });
+  };
+
+  const showButton =
+    isAvailable || isOff || isModelDownloading || (!isUnsupported && status !== null);
+  const statusIndicator =
+    status === null || status.engine === "starting" ? (
+      <span className="shrink-0 font-mono text-[11px] text-fg-muted">Checking…</span>
+    ) : isAvailable ? (
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] font-medium text-emerald-500">
+        <span className="h-2 w-2 rounded-full bg-emerald-500" aria-hidden="true" />
+        Enabled
+      </span>
+    ) : isOff ? (
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] font-medium text-rose-500">
+        <span className="h-2 w-2 rounded-full bg-rose-500" aria-hidden="true" />
+        Not enabled
+      </span>
+    ) : isModelDownloading ? (
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] font-medium text-amber-500">
+        <span className="h-2 w-2 rounded-full bg-amber-500" aria-hidden="true" />
+        Downloading…
+      </span>
+    ) : (
+      <span className="shrink-0 font-mono text-[11px] text-fg-muted">
+        {llmUnavailableReason(status) ?? "Unavailable"}
+      </span>
+    );
+
+  return (
+    <SettingRow
+      title="Apple Intelligence"
+      description={
+        isAvailable
+          ? "Apple's on-device foundation model powers intelligent category and project suggestions"
+          : isOff
+            ? "Apple Intelligence is turned off in macOS System Settings"
+            : isModelDownloading
+              ? "Apple Intelligence model is still downloading in macOS"
+              : isUnsupported
+                ? status !== null
+                  ? (llmUnavailableReason(status) ?? "Not supported on this Mac")
+                  : "Not supported on this Mac"
+                : "Manage Apple Intelligence and Siri preferences in macOS System Settings"
+      }
+    >
+      <div className="flex shrink-0 items-center gap-3">
+        {statusIndicator}
+        {showButton && (
+          <button
+            type="button"
+            onClick={handleOpenSettings}
+            className="shrink-0 rounded-md border border-line px-2.5 py-1 text-[11.5px] font-medium text-fg-muted transition-colors hover:bg-surface hover:text-fg cursor-pointer"
+          >
+            Apple intelligence settings
+          </button>
+        )}
+      </div>
+    </SettingRow>
+  );
+}
+
+function PathLine({ label, path }: { label: string; path: string }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">{label}</span>
+      <Tooltip content={path}>
+        <code className="truncate rounded-lg border border-line-soft bg-inset-soft px-2.5 py-1.5 font-mono text-[11.5px] text-fg-muted">
+          {path}
+        </code>
+      </Tooltip>
+    </div>
+  );
+}
+
+function FileLine({ label, path }: { label: string; path: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-[11.5px]">
+      <span className="shrink-0 text-fg-muted">{label}</span>
+      <Tooltip content={path}>
+        <span className="min-w-0 truncate font-mono text-[11px] text-fg-muted">{path}</span>
+      </Tooltip>
+    </div>
+  );
+}
+
+/** Saved on blur, so typing doesn't rewrite settings.json per keystroke. */
+function CustomInstructions({ value, onSave }: { value: string; onSave: (value: string) => void }) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState(value);
+  const [focused, setFocused] = useState(false);
+  const shown = focused ? draft : value;
+  return (
+    <SettingBlock
+      title="Custom instructions"
+      description="Added to the on-device model's prompt, e.g. “Anything in the Aevio repo is Coding”"
+    >
+      <textarea
+        aria-label="Custom instructions"
+        value={shown}
+        maxLength={1000}
+        rows={3}
+        onFocus={() => {
+          setDraft(value);
+          setFocused(true);
+        }}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          setFocused(false);
+          if (draft !== value) onSave(draft);
+        }}
+        className="mt-2 w-full resize-y rounded-lg border border-line bg-surface px-2.5 py-2 text-[12px] text-fg outline-hidden placeholder:text-fg-muted focus:border-accent"
+        placeholder={t("settings.noCustomInstructions")}
+      />
+    </SettingBlock>
+  );
+}
+
+type DayKey = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+
+const DAYS_OF_WEEK: { key: DayKey; label: string }[] = [
+  { key: "monday", label: "Monday" },
+  { key: "tuesday", label: "Tuesday" },
+  { key: "wednesday", label: "Wednesday" },
+  { key: "thursday", label: "Thursday" },
+  { key: "friday", label: "Friday" },
+  { key: "saturday", label: "Saturday" },
+  { key: "sunday", label: "Sunday" },
+];
+
+function TrackingHoursSetting({
+  settings,
+  update,
+}: {
+  settings: SettingsType;
+  update: (patch: Partial<SettingsType>) => void;
+}) {
+  const { t } = useI18n();
+  const th = settings.trackingHours;
+  const inHours = isInsideTrackingHours(th);
+
+  const updateHours = (patch: Partial<TrackingHours>): void => {
+    update({
+      trackingHours: {
+        ...th,
+        ...patch,
+      },
+    });
+  };
+
+  const updateDay = (dayKey: DayKey, patch: Partial<DaySchedule>): void => {
+    updateHours({
+      [dayKey]: {
+        ...th[dayKey],
+        ...patch,
+      },
+    });
+  };
+
+  return (
+    <SettingGroup title="Tracking hours">
+      <SettingRow
+        title="Schedule tracking hours"
+        description="Only capture activity during scheduled hours; outside them, tracking stays paused unless manually started"
+      >
+        <Toggle
+          checked={th.enabled}
+          label="Schedule tracking hours"
+          onChange={(enabled) => updateHours({ enabled })}
+        />
+      </SettingRow>
+
+      {th.enabled &&
+        (!th.perDay ? (
+          <>
+            <SettingRow
+              title="Daily window"
+              description="7:00 AM to 7:00 PM by default, applying to every day"
+            >
+              <fieldset className="settings-time-range m-0 flex min-w-0 items-end gap-2.5 border-0 p-0">
+                <legend className="sr-only">{t("settings.dailyTrackingHours")}</legend>
+                <label className="flex flex-col gap-1">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
+                    Start
+                  </span>
+                  <input
+                    type="time"
+                    value={th.defaultStart}
+                    onChange={(e) => updateHours({ defaultStart: e.target.value })}
+                    className="h-7 rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg outline-hidden focus:border-accent"
+                  />
+                </label>
+                <span className="pb-1 text-[12px] text-fg-muted">to</span>
+                <label className="flex flex-col gap-1">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
+                    End
+                  </span>
+                  <input
+                    type="time"
+                    value={th.defaultEnd}
+                    onChange={(e) => updateHours({ defaultEnd: e.target.value })}
+                    className="h-7 rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg outline-hidden focus:border-accent"
+                  />
+                </label>
+              </fieldset>
+            </SettingRow>
+            <div className="settings-inline-note flex items-center justify-between border-b border-line px-4 py-2.5 last:border-b-0">
+              <span className="font-mono text-[10.5px] text-fg-muted">
+                {inHours ? "Currently within tracking window" : "Currently outside tracking window"}
+              </span>
+              <button
+                type="button"
+                onClick={() => updateHours({ perDay: true })}
+                className="flex items-center gap-1 text-[12px] font-medium text-accent hover:underline cursor-pointer"
+              >
+                Customize per day
+                <svg
+                  viewBox="0 0 24 24"
+                  className="size-3.5 fill-none stroke-current stroke-2"
+                  aria-hidden="true"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="settings-inline-note flex items-center justify-between border-b border-line px-4 py-2.5">
+              <span className="text-[12px] text-fg-muted">
+                Set hours for each day of the week. Unchecked days will not track.
+              </span>
+              <button
+                type="button"
+                onClick={() => updateHours({ perDay: false })}
+                className="flex items-center gap-1 text-[12px] font-medium text-accent hover:underline cursor-pointer"
+              >
+                Collapse to single window
+                <svg
+                  viewBox="0 0 24 24"
+                  className="size-3.5 fill-none stroke-current stroke-2"
+                  aria-hidden="true"
+                >
+                  <polyline points="18 15 12 9 6 15" />
+                </svg>
+              </button>
+            </div>
+            {DAYS_OF_WEEK.map(({ key, label }) => {
+              const day = th[key];
+              return (
+                <div
+                  key={key}
+                  className="settings-day-row flex items-center justify-between gap-4 border-b border-line px-4 py-2.5 last:border-b-0"
+                >
+                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={day.enabled}
+                      onChange={(e) => updateDay(key, { enabled: e.target.checked })}
+                      className="rounded border-line text-accent focus:ring-accent"
+                    />
+                    <span
+                      className={`text-[13px] font-medium ${
+                        day.enabled ? "text-fg" : "text-fg-muted"
+                      }`}
+                    >
+                      {label}
+                    </span>
+                  </label>
+                  {day.enabled ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="time"
+                        aria-label={`${label} tracking start time`}
+                        value={day.start}
+                        onChange={(e) => updateDay(key, { start: e.target.value })}
+                        className="h-7 rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg outline-hidden focus:border-accent"
+                      />
+                      <span className="text-[12px] text-fg-muted">to</span>
+                      <input
+                        type="time"
+                        aria-label={`${label} tracking end time`}
+                        value={day.end}
+                        onChange={(e) => updateDay(key, { end: e.target.value })}
+                        className="h-7 rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg outline-hidden focus:border-accent"
+                      />
+                    </div>
+                  ) : (
+                    <span className="text-[12px] text-fg-muted italic">
+                      {t("settings.noTracking")}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+            <div className="settings-inline-note flex items-center justify-between border-b border-line px-4 py-2.5 last:border-b-0">
+              <span className="font-mono text-[10.5px] text-fg-muted">
+                {inHours ? "Currently within tracking window" : "Currently outside tracking window"}
+              </span>
+            </div>
+          </>
+        ))}
+    </SettingGroup>
+  );
+}
+
+/** "Checking…", "Downloading 42%", or "Up to date · <version>". */
+function updateSummary(status: UpdateStatus): string {
+  switch (status.phase.kind) {
+    case "checking":
+      return "Checking for updates…";
+    case "downloading": {
+      const { downloaded, total } = status.phase;
+      return total
+        ? `Downloading ${Math.min(100, Math.round((downloaded / total) * 100))}%…`
+        : "Downloading…";
+    }
+    case "installing":
+      return "Installing - Aevio will restart";
+    case "idle":
+      break;
+  }
+  if (status.available) {
+    return `Version ${status.available.version} is available. You have ${status.currentVersion}.`;
+  }
+  return `Up to date · ${status.currentVersion}`;
+}
+
+/**
+ * git-cliff writes Markdown; shown as plain text, minus the heading and bold
+ * markers that would otherwise read as noise.
+ */
+function plainNotes(notes: string): string {
+  return (
+    notes
+      .split("\n")
+      // The "## [0.4.7] - 2026-09-28" title repeats the row's own header.
+      .filter((line) => !/^##\s*\[[^\]]*\]/.test(line))
+      .map((line) =>
+        line
+          .replace(/^#+\s*/, "")
+          .replace(/\*\*(.+?)\*\*/g, "$1")
+          .replace(/^(\s*)[-*]\s+/, "$1• "),
+      )
+      .join("\n")
+      .trim()
+  );
+}
+
+function ReleaseNotesList({ releases }: { releases: ReleaseNotes[] }) {
+  return (
+    <div className="max-h-56 overflow-y-auto overscroll-contain rounded-lg border border-line bg-inset-soft">
+      {releases.map((release) => (
+        <div
+          key={release.version}
+          className="border-b border-line-soft px-3 py-2.5 last:border-b-0"
+        >
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="font-mono text-[11.5px] font-semibold text-fg">{release.version}</span>
+            {release.publishedAt && (
+              <span className="text-[11px] text-fg-muted">
+                {formatShortDate(Date.parse(release.publishedAt))}
+              </span>
+            )}
+          </div>
+          <pre className="mt-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words text-fg-muted">
+            {plainNotes(release.notes) || "No release notes."}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The updater's status and controls. The Rust side checks on its own
+ * schedule (see src-tauri/src/updater.rs); this only shows the result.
+ */
+function UpdatesSetting({ status }: { status: UpdateStatus | null }) {
+  const [requestError, setRequestError] = useState<string | null>(null);
+
+  const check = (): void => {
+    setRequestError(null);
+    api.checkForUpdates().catch((cause: unknown) => setRequestError(describeError(cause)));
+  };
+  const install = (): void => {
+    setRequestError(null);
+    api.installUpdate().catch((cause: unknown) => setRequestError(describeError(cause)));
+  };
+
+  const busy = status !== null && status.phase.kind !== "idle";
+  const error = requestError ?? status?.error ?? null;
+  const available = status?.available ?? null;
+
+  return (
+    <SettingGroup title="Updates">
+      <SettingRow
+        title="Aevio updates"
+        description={status === null ? "Loading…" : updateSummary(status)}
+      >
+        {available ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={install}
+            className="shrink-0 rounded-lg bg-accent px-3 py-1.5 font-semibold text-[12px] text-accent-fg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Install &amp; restart
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={busy || status === null}
+            onClick={check}
+            className="shrink-0 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] text-fg-muted hover:bg-surface-strong disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Check for updates
+          </button>
+        )}
+      </SettingRow>
+      {error && (
+        <div className="border-b border-line px-4 py-2 text-[11.5px] text-danger last:border-b-0">
+          {error}
+        </div>
+      )}
+      {available && (
+        <SettingBlock
+          title="What's new"
+          description="Installing restarts Aevio. A running tracking session ends and a new one starts when it reopens."
+        >
+          <ReleaseNotesList releases={available.releases} />
+        </SettingBlock>
+      )}
+    </SettingGroup>
+  );
+}
+
+function PermissionsSetting({ onError }: { onError: (message: string | null) => void }) {
+  const { t } = useI18n();
+  const [permissions, setPermissions] = useState<PermissionInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadPermissions = useCallback(() => {
+    api
+      .checkPermissions()
+      .then((data) => {
+        setPermissions(data);
+        setLoading(false);
+      })
+      .catch((cause: unknown) => {
+        onError(describeError(cause));
+        setLoading(false);
+      });
+  }, [onError]);
+
+  useEffect(() => {
+    loadPermissions();
+    window.addEventListener("focus", loadPermissions);
+    return () => window.removeEventListener("focus", loadPermissions);
+  }, [loadPermissions]);
+
+  const handleOpenSettings = (url: string): void => {
+    onError(null);
+    openUrl(url).catch((cause: unknown) => {
+      onError(describeError(cause));
+    });
+  };
+
+  if (!loading && permissions.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="px-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
+        Permissions
+      </h2>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {loading && permissions.length === 0 ? (
+          <div className="settings-group-card shape-bleed-table rounded-xl border border-settings-card-border bg-settings-card p-4 text-[12px] text-fg-muted">
+            Checking permissions…
+          </div>
+        ) : (
+          permissions.map((perm) => (
+            <div
+              key={perm.id}
+              className="settings-group-card shape-bleed-table flex flex-col justify-between gap-3 rounded-xl border border-settings-card-border bg-settings-card p-4"
+            >
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[13px] font-medium text-fg">{perm.name}</span>
+                  <span
+                    className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-wider ${
+                      perm.required
+                        ? "border-accent/40 bg-accent-soft text-accent"
+                        : "border-line bg-surface text-fg-muted"
+                    }`}
+                  >
+                    {perm.required ? "Required" : "Not required"}
+                  </span>
+                </div>
+                <p className="text-[12px] leading-relaxed text-fg-muted">{perm.description}</p>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 border-t border-line/60 pt-3">
+                {perm.granted ? (
+                  <div className="inline-flex items-center gap-1.5 text-[12px] font-medium text-emerald-500">
+                    <svg
+                      className="h-3.5 w-3.5 fill-current"
+                      viewBox="0 0 16 16"
+                      aria-hidden="true"
+                    >
+                      <circle cx="8" cy="8" r="6" />
+                    </svg>
+                    <span>{t("settings.granted")}</span>
+                  </div>
+                ) : (
+                  <div className="inline-flex items-center gap-1.5 text-[12px] font-medium text-rose-500">
+                    <svg
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      viewBox="0 0 16 16"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <line x1="4" y1="4" x2="12" y2="12" />
+                      <line x1="12" y1="4" x2="4" y2="12" />
+                    </svg>
+                    <span>{t("settings.notGranted")}</span>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => handleOpenSettings(perm.settingsUrl)}
+                  className="shrink-0 cursor-pointer rounded-md border border-line bg-surface px-2.5 py-1 text-[11.5px] font-medium text-fg-muted transition-colors hover:bg-surface-strong hover:text-fg"
+                  aria-label={`Open ${perm.name} settings`}
+                >
+                  Open {perm.name} settings
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function Settings({
+  route,
+  updates,
+  revealUpdates,
+  navigate,
+}: {
+  route: Extract<Route, { name: "settings" }>;
+  updates: UpdateStatus | null;
+  /** Bumped each time the sidebar asks for the Updates section. */
+  revealUpdates: number;
+  navigate?: (route: Route) => void;
+}) {
+  const { t } = useI18n();
+  const { settings, storage, error, update } = useSettings();
+  const [openError, setOpenError] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+
+  const openStorage = (): void => {
+    if (storage === null) return;
+    setOpenError(null);
+    openPath(storage.dataDir).catch((cause: unknown) => setOpenError(describeError(cause)));
+  };
+
+  const aiStatus = useAiStatus();
+  const [metricDays, setMetricDays] = useState(30);
+  const { metrics, error: metricsError, adopt } = useAiMetrics(metricDays);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const saveThreshold = useCallback(
+    (autoAcceptPercent: number) => update({ autoAcceptPercent }),
+    [update],
+  );
+
+  const retrain = (): void => {
+    setAiError(null);
+    api.aiRetrain().catch((cause: unknown) => setAiError(describeError(cause)));
+  };
+
+  const resetLearned = (): void => {
+    setConfirmReset(false);
+    setAiError(null);
+    api
+      .aiResetLearned(metricDays)
+      .then(adopt)
+      .catch((cause: unknown) => setAiError(describeError(cause)));
+  };
+
+  const [energyDays, setEnergyDays] = useState(7);
+  const {
+    summary: energySummary,
+    error: energyError,
+    loading: energyLoading,
+    resetHistory: resetEnergyHistory,
+  } = useEnergy(energyDays);
+
+  const [activeSection, setActiveSection] = useState<SettingsSection>("overview");
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  const selectSection = useCallback((section: SettingsSection): void => {
+    setActiveSection(section);
+    const content = contentRef.current;
+    const target = content?.querySelector<HTMLElement>(`[data-settings-section="${section}"]`);
+    if (content === null || target === null || target === undefined) return;
+    const top =
+      target.getBoundingClientRect().top -
+      content.getBoundingClientRect().top +
+      content.scrollTop -
+      16;
+    content.scrollTo({
+      top: Math.max(0, top),
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+  }, []);
+
+  const [advancedExpanded, setAdvancedExpanded] = useState<boolean>(() =>
+    parseAdvancedSection(route.section),
+  );
+
+  useEffect(() => {
+    if (isAdvancedSection(activeSection)) {
+      setAdvancedExpanded(true);
+    }
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (route.section === "notifications") {
+      selectSection("notifications");
+      return;
+    }
+    if (route.section === "ai") {
+      selectSection("ai");
+      return;
+    }
+    if (
+      route.section === "pluginStore" ||
+      route.section === "plugins" ||
+      route.section === "extensions"
+    ) {
+      selectSection("pluginStore");
+      return;
+    }
+    const section = parseSettingsSection(route.section ?? null);
+    if (section && section !== "overview") {
+      selectSection(section);
+      return;
+    }
+    if (route.section !== "updates" && revealUpdates === 0) return;
+    selectSection("overview");
+  }, [route.section, revealUpdates, selectSection]);
+
+  useEffect(() => {
+    const content = contentRef.current;
+    if (content === null) return;
+    const sections = Array.from(content.querySelectorAll<HTMLElement>("[data-settings-section]"));
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const current = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((first, second) => first.boundingClientRect.top - second.boundingClientRect.top)
+          .map((entry) => parseSettingsSection(entry.target.getAttribute("data-settings-section")))
+          .find((section) => section !== null);
+        if (current !== undefined && current !== null) {
+          setActiveSection(current);
+        }
+      },
+      { root: content, rootMargin: "-12% 0px -76% 0px", threshold: 0 },
+    );
+    sections.forEach((section) => {
+      observer.observe(section);
+    });
+    // The last section can be too short to ever reach the observed band, so
+    // scrolled all the way down it is the one in view.
+    const onScroll = (): void => {
+      if (content.scrollTop + content.clientHeight < content.scrollHeight - 2) {
+        return;
+      }
+      const last = parseSettingsSection(
+        sections[sections.length - 1]?.getAttribute("data-settings-section") ?? null,
+      );
+      if (last !== null) setActiveSection(last);
+    };
+    content.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      observer.disconnect();
+      content.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  const toggleAdvanced = (): void => {
+    setAdvancedExpanded((prev) => {
+      const next = !prev;
+      if (next && !isAdvancedSection(activeSection)) {
+        selectSection("ai");
+      }
+      return next;
+    });
+  };
+
+  const trayOff = !settings.trayEnabled;
+  const sectionError =
+    activeSection === "general"
+      ? loginError
+      : activeSection === "data"
+        ? openError
+        : activeSection === "suggestions"
+          ? null
+          : activeSection === "ai"
+            ? (aiError ?? metricsError)
+            : activeSection === "advanced"
+              ? energyError
+              : null;
+  const problem = error ?? sectionError;
+
+  return (
+    <main className="settings-page flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-canvas font-sans text-fg">
+      <header className="settings-header flex shrink-0 items-center justify-between gap-4 border-b border-line px-5 py-3">
+        <div>
+          <h1 className="text-[16px] font-semibold text-fg-strong">{t("settings.title")}</h1>
+          <p className="mt-0.5 text-[11px] text-fg-muted">{t("settings.autosave")}</p>
+        </div>
+        <span className="shrink-0 font-mono text-[10.5px] text-fg-muted">
+          {shortcutLabel(",")} opens this
+        </span>
+      </header>
+
+      {problem !== null && (
+        <p
+          role="alert"
+          className="mx-5 mt-3 shrink-0 rounded-[10px] border border-danger/40 bg-danger-soft px-3.5 py-2.5 text-[13px] text-danger"
+        >
+          {problem}
+        </p>
+      )}
+
+      <div className="settings-layout flex min-h-0 min-w-0 flex-1">
+        <nav
+          aria-label="Settings sections"
+          className="settings-nav w-48 shrink-0 overflow-y-auto border-r border-line bg-rail px-3 py-4"
+        >
+          <button
+            type="button"
+            aria-current={activeSection === "overview" ? "location" : undefined}
+            onClick={() => selectSection("overview")}
+            className={`settings-nav-item ${activeSection === "overview" ? "settings-nav-item-active" : ""}`}
+          >
+            Overview
+          </button>
+          {SETTINGS_NAV_ITEMS.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              aria-current={activeSection === item.id ? "location" : undefined}
+              onClick={() => selectSection(item.id)}
+              className={`settings-nav-item ${activeSection === item.id ? "settings-nav-item-active" : ""}`}
+            >
+              {item.label}
+            </button>
+          ))}
+          <div className="settings-nav-group flex flex-col gap-1">
+            <button
+              type="button"
+              aria-expanded={advancedExpanded}
+              onClick={toggleAdvanced}
+              className={`settings-nav-item flex items-center justify-between cursor-pointer ${
+                isAdvancedSection(activeSection) && !advancedExpanded
+                  ? "settings-nav-item-active"
+                  : ""
+              }`}
+            >
+              <span>{t("settings.advancedSettings")}</span>
+              <svg
+                viewBox="0 0 24 24"
+                className={`size-3 shrink-0 fill-none stroke-current stroke-2 transition-transform duration-150 ${
+                  advancedExpanded ? "rotate-90" : ""
+                }`}
+                aria-hidden="true"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+            {advancedExpanded && (
+              <div className="settings-nav-subitems">
+                <button
+                  type="button"
+                  aria-current={activeSection === "ai" ? "location" : undefined}
+                  onClick={() => selectSection("ai")}
+                  className={`settings-nav-item !text-[11.5px] !py-1.5 cursor-pointer ${
+                    activeSection === "ai" ? "settings-nav-item-active" : ""
+                  }`}
+                >
+                  AI
+                </button>
+                <button
+                  type="button"
+                  aria-current={activeSection === "advanced" ? "location" : undefined}
+                  onClick={() => selectSection("advanced")}
+                  className={`settings-nav-item !text-[11.5px] !py-1.5 cursor-pointer ${
+                    activeSection === "advanced" ? "settings-nav-item-active" : ""
+                  }`}
+                >
+                  Battery & Energy
+                </button>
+              </div>
+            )}
+          </div>
+        </nav>
+
+        <div
+          ref={contentRef}
+          className="settings-content flex min-h-0 min-w-0 flex-1 flex-col gap-8 overflow-y-auto overscroll-contain p-5"
+        >
+          <section
+            id="settings-section-overview"
+            data-settings-section="overview"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="Overview"
+              description="System permissions, updates, and your current version."
+            />
+            {overviewError && (
+              <div className="rounded-lg border border-danger/30 bg-danger/10 p-3 text-[12px] text-danger">
+                {overviewError}
+              </div>
+            )}
+            <PermissionsSetting onError={setOverviewError} />
+            <UpdatesSetting status={updates} />
+          </section>
+
+          <section
+            id="settings-section-appearance"
+            data-settings-section="appearance"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="Appearance"
+              description="Set the colour palette and reading mode used across Aevio."
+            />
+            <SettingGroup title="Palette & mode">
+              <SettingRow title={t("language.label")} description={t("language.description")}>
+                <Picker<Language>
+                  ariaLabel={t("language.label")}
+                  value={settings.language}
+                  options={[
+                    { value: "system", label: t("language.system") },
+                    { value: "de", label: t("language.de") },
+                    { value: "en", label: t("language.en") },
+                  ]}
+                  onChange={(language) => update({ language })}
+                  variant="compact"
+                />
+              </SettingRow>
+              <SettingBlock
+                title="Palette"
+                description="Choose a complete colour scheme. The preview updates the whole workspace."
+              >
+                <div
+                  role="radiogroup"
+                  aria-label="Colour palette"
+                  className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+                >
+                  {PALETTE_ORDER.map((palette) => {
+                    const selected = settings.palette === palette;
+                    const meta = PALETTES[palette];
+                    return (
+                      <button
+                        key={palette}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        aria-label={`${meta.label} palette`}
+                        onClick={() => update({ palette })}
+                        className={`group flex min-h-22 flex-col justify-between rounded-lg border p-2.5 text-left transition-colors focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                          selected
+                            ? "border-accent bg-accent-soft text-fg-strong"
+                            : "border-line bg-surface text-fg-muted hover:border-line-strong hover:bg-surface-strong"
+                        }`}
+                      >
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="text-[12px] font-medium">{meta.label}</span>
+                          {selected && (
+                            <span className="grid size-4 place-items-center rounded-full bg-accent text-accent-fg">
+                              <svg
+                                viewBox="0 0 24 24"
+                                className="size-2.5"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="3"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="m5 12 4 4L19 6" />
+                              </svg>
+                            </span>
+                          )}
+                        </span>
+                        <span className="flex gap-1.5" aria-hidden="true">
+                          {meta.colors.map((color, index) => (
+                            <span
+                              key={`${color}-${index}`}
+                              className="size-3 rounded-full ring-1 ring-line-strong"
+                              style={{ backgroundColor: color }}
+                            />
+                          ))}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </SettingBlock>
+              <SettingRow title="Mode" description={`Dark, light, or follow ${OS_NAME}`}>
+                <SegmentedControl
+                  name="mode"
+                  value={settings.mode}
+                  options={MODE_OPTIONS}
+                  onChange={(mode) => update({ mode })}
+                />
+              </SettingRow>
+              <SettingRow
+                title="Shape"
+                description="Spaced rounded cards, or edge-to-edge sections with dividers"
+              >
+                <SegmentedControl
+                  name="shape"
+                  value={settings.shape}
+                  options={SHAPE_OPTIONS}
+                  onChange={(shape) => update({ shape })}
+                />
+              </SettingRow>
+              <SettingBlock title="Size mode" description="Scale text and icons throughout Aevio">
+                <SegmentedControl
+                  name="size-mode"
+                  value={settings.sizeMode}
+                  options={SIZE_OPTIONS}
+                  largeTarget
+                  onChange={(sizeMode) => update({ sizeMode })}
+                />
+              </SettingBlock>
+            </SettingGroup>
+          </section>
+
+          <section
+            id="settings-section-general"
+            data-settings-section="general"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="General"
+              description="Control how Aevio starts and behaves when its window closes."
+            />
+            <SettingGroup title="App behavior">
+              <LaunchAtLoginRow onError={setLoginError} />
+              <SettingRow title={TRAY_ICON} description="Keep a tray icon with quick controls">
+                <Toggle
+                  checked={settings.trayEnabled}
+                  label={TRAY_ICON}
+                  onChange={(trayEnabled) => update({ trayEnabled })}
+                />
+              </SettingRow>
+              <SettingRow
+                title="When I close the window"
+                description={
+                  trayOff
+                    ? `${TRAY_ICON} is off, so closing always quits`
+                    : "What the close button does while Aevio keeps tracking"
+                }
+              >
+                <SegmentedControl
+                  name="close-behavior"
+                  value={settings.closeBehavior}
+                  options={CLOSE_OPTIONS}
+                  onChange={(closeBehavior) => update({ closeBehavior })}
+                />
+              </SettingRow>
+            </SettingGroup>
+            <WatchPairingCard onError={setLoginError} />
+          </section>
+
+          <section
+            id="settings-section-tracking"
+            data-settings-section="tracking"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="Tracking & work"
+              description="Choose when activity is captured and set the target used in work reports."
+            />
+            <TrackingHoursSetting settings={settings} update={update} />
+            <SettingGroup title="Work hours">
+              <SettingRow
+                title="Expected hours"
+                description="Your weekly work target. Calendar and My Timesheet use one fifth as the daily target."
+              >
+                <Select
+                  label="Expected hours per week"
+                  value={settings.weeklyTargetHours}
+                  options={targetOptions(settings.weeklyTargetHours)}
+                  onChange={(weeklyTargetHours) => update({ weeklyTargetHours })}
+                />
+              </SettingRow>
+              <SettingRow
+                title="Count toward Work Hours"
+                description="Choose which categories count as work rather than personal time"
+                status="not-implemented"
+              />
+            </SettingGroup>
+          </section>
+
+          <section
+            id="settings-section-suggestions"
+            data-settings-section="suggestions"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="Suggestions"
+              description="Set everyday categorization and confident auto-accept behavior."
+            />
+            <SettingGroup title="Categories & AI">
+              <SettingRow title="Suggestion engine" description={engineSummary(aiStatus)}>
+                <span className="shrink-0 font-mono text-[11px] text-fg-muted">
+                  {aiStatus === null
+                    ? ""
+                    : aiStatus.calibrated
+                      ? `${aiStatus.outcomes} reviewed`
+                      : `learning · ${aiStatus.outcomes}/50 reviewed`}
+                </span>
+              </SettingRow>
+              <SettingRow
+                title="What to suggest"
+                description="Suggest a category for each entry, or a project too"
+              >
+                <SegmentedControl
+                  name="ai-suggest"
+                  value={settings.aiSuggest}
+                  options={SUGGEST_OPTIONS}
+                  onChange={(aiSuggest) => update({ aiSuggest })}
+                />
+              </SettingRow>
+              <SettingRow
+                title="Auto-accept confident suggestions"
+                description={
+                  aiStatus?.calibrated === false
+                    ? "Starts after 50 reviewed suggestions; until then only rule matches auto-approve"
+                    : "Approve entries whose every suggestion clears the threshold"
+                }
+              >
+                <Toggle
+                  checked={settings.autoAccept}
+                  label="Auto-accept confident suggestions"
+                  onChange={(autoAccept) => update({ autoAccept })}
+                />
+              </SettingRow>
+              <SettingBlock
+                title="Auto-accept threshold"
+                description="Minimum calibrated confidence for an entry to skip review"
+              >
+                <ThresholdSlider
+                  value={settings.autoAcceptPercent}
+                  disabled={!settings.autoAccept}
+                  metrics={metrics}
+                  calibrated={aiStatus?.calibrated ?? false}
+                  onChange={saveThreshold}
+                />
+              </SettingBlock>
+              <CustomInstructions
+                value={settings.aiCustomPrompt}
+                onSave={(aiCustomPrompt) => update({ aiCustomPrompt })}
+              />
+              <SettingBlock
+                title="External AI provider"
+                description="Connect Aevio to Ollama or an OpenAI-compatible API for real AI answers in the agent chat."
+              >
+                <div className="flex flex-col gap-2">
+                  <select
+                    className="h-9 w-full rounded-md border border-line bg-surface px-3 text-sm text-fg"
+                    onChange={(event) => update({ aiProvider: event.target.value })}
+                    value={settings.aiProvider}
+                  >
+                    <option value="">None (local/on-device only)</option>
+                    <option value="ollama">Ollama (local)</option>
+                    <option value="openai">OpenAI-compatible (API key)</option>
+                  </select>
+                  <Input
+                    onChange={(event) => update({ aiBaseUrl: event.target.value })}
+                    placeholder="Base URL (e.g. http://localhost:11434)"
+                    value={settings.aiBaseUrl}
+                  />
+                  <Input
+                    onChange={(event) => update({ aiModel: event.target.value })}
+                    placeholder="Model (e.g. llama3.2)"
+                    value={settings.aiModel}
+                  />
+                  <Input
+                    onChange={(event) => update({ aiApiKey: event.target.value })}
+                    placeholder="API key (optional for Ollama)"
+                    type="password"
+                    value={settings.aiApiKey}
+                  />
+                </div>
+              </SettingBlock>
+            </SettingGroup>
+          </section>
+
+          <section
+            id="settings-section-data"
+            data-settings-section="data"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="Data & storage"
+              description="Review where Aevio stores local information and how long automatic activity is retained."
+            />
+            <SettingGroup title="Local data">
+              <SettingBlock
+                title="Storage location"
+                description="Where your trackers, activity history, and preferences live"
+              >
+                {storage === null ? (
+                  <p className="text-[12px] text-fg-muted">Locating…</p>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    <PathLine label="Data folder" path={storage.dataDir} />
+                    <div className="flex flex-col gap-1.5">
+                      <FileLine label="Database" path={storage.databaseFile} />
+                      <FileLine label="Preferences" path={storage.configFile} />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={openStorage}
+                      className="self-start rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] text-fg-muted hover:bg-surface-strong"
+                    >
+                      Open folder in {FILE_MANAGER}
+                    </button>
+                  </div>
+                )}
+              </SettingBlock>
+              <SettingRow
+                title="Keep activity until"
+                description="Delete automatic activity history older than this. Manual trackers are never touched."
+              >
+                <Select
+                  label="Keep activity until"
+                  value={settings.retentionDays}
+                  options={RETENTION_OPTIONS}
+                  onChange={(retentionDays) => update({ retentionDays })}
+                />
+              </SettingRow>
+            </SettingGroup>
+          </section>
+
+          <section
+            id="settings-section-notifications"
+            data-settings-section="notifications"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="Notifications"
+              description="Choose where app notifications appear, whichever app is in front. System notifications follow your OS settings."
+            />
+            <SettingGroup title="Placement">
+              <SettingRow
+                title="Notification position"
+                description="Applies to break reminders, the live break tile, welcome-back notifications, and stopwatch reminders."
+              >
+                <Picker
+                  ariaLabel="Notification position"
+                  value={settings.notificationPlacement}
+                  onChange={(notificationPlacement) => update({ notificationPlacement })}
+                  options={[
+                    { value: "topLeft", label: "Top left" },
+                    { value: "topRight", label: "Top right" },
+                    { value: "topCenter", label: "Top center" },
+                    { value: "bottomLeft", label: "Bottom left" },
+                    { value: "bottomRight", label: "Bottom right" },
+                  ]}
+                />
+              </SettingRow>
+            </SettingGroup>
+            <BreakSettingsGroups />
+            <SettingGroup title="Stopwatch reminders">
+              <SettingRow
+                title="Long-run reminders"
+                description="Remind once when a stopwatch's current run reaches this length."
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-[12px] text-fg-muted">{t("settings.after")}</span>
+                  <Select
+                    label="Remind after"
+                    value={settings.stopwatchReminder.afterMinutes}
+                    options={[
+                      ...new Set([
+                        60,
+                        120,
+                        180,
+                        240,
+                        360,
+                        480,
+                        settings.stopwatchReminder.afterMinutes,
+                      ]),
+                    ]
+                      .sort((a, b) => a - b)
+                      .map((value) => ({ value, label: `${value / 60}h` }))}
+                    onChange={(afterMinutes) =>
+                      update({
+                        stopwatchReminder: {
+                          ...settings.stopwatchReminder,
+                          afterMinutes,
+                        },
+                      })
+                    }
+                  />
+                  <Toggle
+                    label="Long-run reminders"
+                    checked={settings.stopwatchReminder.enabled}
+                    onChange={(enabled) =>
+                      update({
+                        stopwatchReminder: {
+                          ...settings.stopwatchReminder,
+                          enabled,
+                        },
+                      })
+                    }
+                  />
+                </div>
+              </SettingRow>
+            </SettingGroup>
+          </section>
+
+          <section
+            id="settings-section-pluginStore"
+            data-settings-section="pluginStore"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="Plugin Store"
+              description="Discover and manage host-mediated Aevio extensions."
+            />
+            <PluginStore navigate={navigate ?? (() => {})} />
+          </section>
+
+          <section
+            id="settings-section-integrations"
+            data-settings-section="integrations"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="Integrations"
+              description="Connect Aevio with external services."
+            />
+            <Integrations />
+          </section>
+
+          <section
+            id="settings-section-ai"
+            data-settings-section="ai"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="AI & Machine Learning"
+              description="On-device models, Apple Intelligence integration, personal model maintenance, and prediction effectiveness."
+            />
+            <SettingGroup title="On-device intelligence">
+              <SettingRow title="Suggestion engine" description={engineSummary(aiStatus)}>
+                <span className="shrink-0 font-mono text-[11px] text-fg-muted">
+                  {aiStatus === null
+                    ? ""
+                    : aiStatus.calibrated
+                      ? `${aiStatus.outcomes} reviewed`
+                      : `learning · ${aiStatus.outcomes}/50 reviewed`}
+                </span>
+              </SettingRow>
+              {PLATFORM === "macos" && (
+                <AppleIntelligenceRow status={aiStatus} onError={setAiError} />
+              )}
+            </SettingGroup>
+
+            <SettingGroup title="AI effectiveness">
+              <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-3">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-medium text-fg">
+                    {t("settings.howSuggestionsDoing")}
+                  </div>
+                  <div className="text-[12px] leading-relaxed text-fg-muted">
+                    Measured on your own reviews, on {THIS_COMPUTER}
+                  </div>
+                </div>
+                <SegmentedControl
+                  name="ai-metrics-range"
+                  value={metricDays}
+                  options={METRIC_RANGES}
+                  onChange={setMetricDays}
+                />
+              </div>
+              <div className="border-b border-line px-4 py-3">
+                {metrics === null ? (
+                  <p className="text-[12px] text-fg-muted">Loading…</p>
+                ) : (
+                  <AiEffectiveness metrics={metrics} status={aiStatus} />
+                )}
+              </div>
+              <SettingBlock
+                title="Personal model"
+                description="Classifiers trained on your approved entries"
+              >
+                {metrics === null ? (
+                  <p className="text-[12px] text-fg-muted">Loading…</p>
+                ) : (
+                  <PersonalModels metrics={metrics} status={aiStatus} onRetrain={retrain} />
+                )}
+              </SettingBlock>
+              <SettingRow
+                title="Reset learned data"
+                description="Forget personal models, calibration, and the similar-entry index. Entries, categories, projects, and rules stay."
+              >
+                <button
+                  type="button"
+                  onClick={() => setConfirmReset(true)}
+                  className="shrink-0 rounded-lg border border-danger/40 bg-danger-soft px-3 py-1.5 text-[12px] font-medium text-danger hover:bg-danger/20"
+                >
+                  Reset…
+                </button>
+              </SettingRow>
+            </SettingGroup>
+            <SettingGroup title="Decision models">
+              <DecisionModelsSettings />
+            </SettingGroup>
+          </section>
+
+          <section
+            id="settings-section-advanced"
+            data-settings-section="advanced"
+            className="settings-page-section flex flex-col gap-4"
+          >
+            <SettingsSectionHeading
+              title="Advanced settings"
+              description="System performance diagnostics and Battery & Energy monitoring."
+            />
+            <SettingGroup title="Battery & Energy">
+              <BatteryEnergyMonitor
+                summary={energySummary}
+                loading={energyLoading}
+                selectedDays={energyDays}
+                onRangeChange={setEnergyDays}
+                onReset={resetEnergyHistory}
+              />
+            </SettingGroup>
+          </section>
+          {confirmReset && (
+            <ConfirmDialog
+              title="Reset learned data?"
+              body="Aevio forgets its personal models, calibration, and the index of similar entries. Your entries, categories, projects, and rules are kept. Suggestions start over from Apple's on-device model and rules, and confidence is capped at 90% again until you review 50 more."
+              confirmLabel="Reset learned data"
+              onConfirm={resetLearned}
+              onCancel={() => setConfirmReset(false)}
+            />
+          )}
+        </div>
+      </div>
+    </main>
+  );
+}

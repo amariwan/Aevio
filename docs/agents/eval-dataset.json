@@ -1,0 +1,14 @@
+{
+  "questions": [
+    { "id": "q1", "query": "How does money handling work in invoices", "expected_docs": ["docs/features/finance.md"] },
+    { "id": "q2", "query": "Where is durable state owned", "expected_docs": ["docs/architecture/overview.md"] },
+    { "id": "q3", "query": "Coach focus sessions", "expected_docs": ["docs/features/coach.md"] },
+    { "id": "q4", "query": "platform capture macos windows", "expected_docs": ["docs/features/activity-capture.md"] },
+    { "id": "q5", "query": "Tauri commands reference", "expected_docs": ["docs/reference/tauri-commands.md"] },
+    { "id": "q6", "query": "engineering file size limits", "expected_docs": ["docs/engineering/file-size.md"] },
+    { "id": "q7", "query": "Swift sidecar AI", "expected_docs": ["docs/architecture/ai-sidecar.md"] },
+    { "id": "q8", "query": "state synchronization events", "expected_docs": ["docs/features/state-sync.md"] },
+    { "id": "q9", "query": "notifications native OS", "expected_docs": ["docs/features/notifications.md"] },
+    { "id": "q10", "query": "source priority hallucination", "expected_docs": ["docs/agents/source-priority.md"] }
+  ]
+}

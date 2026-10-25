@@ -1,0 +1,611 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "@/hooks/useI18n";
+import type { Slice } from "@/components/data-viz/Charts";
+import { DateStepper, InlineError, PageHeader, ScaleControl } from "@/components/layout/Page";
+import { AiEngineBanner } from "@/features/ai/components/AiEngineBanner";
+import { useAiStatus } from "@/features/ai/hooks/useAiStatus";
+import { EntryReviewSheet } from "@/features/entries/components/EntryReviewSheet";
+import { useCatalog } from "@/hooks/useCatalog";
+import { useEntryReview } from "@/hooks/useEntryReview";
+import { useSettings } from "@/hooks/useSettings";
+import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { timeByApp } from "@/lib/activity";
+import * as api from "@/lib/api";
+import { describeError } from "@/lib/api";
+import type { BreakEntry } from "@/lib/breaks";
+import {
+  addDays,
+  calendarDay,
+  calendarDayEdges,
+  calendarRange,
+  currentCalendarDay,
+  localDateString,
+  parseLocalDate,
+  rangeLabel,
+  startOfWeek,
+  stepDate,
+} from "@/lib/dates";
+import {
+  blockState,
+  countsAsWork,
+  durationOf,
+  entryEnd,
+  isLocked,
+  isReviewable,
+  isTyping,
+} from "@/lib/entries";
+import { formatDuration } from "@/lib/format";
+import { formatTargetHours, targetMsFor } from "@/lib/settings";
+import type {
+  ActivitySegment,
+  CalendarScale,
+  Category,
+  RollupCell,
+  Route,
+  TimeEntry,
+} from "@/lib/types";
+import { DayView } from "./calendar/DayView";
+import { MonthView } from "./calendar/MonthView";
+import { RangeSummary } from "./calendar/RangeSummary";
+import { WeekView } from "./calendar/WeekView";
+
+type CalendarRoute = Extract<Route, { name: "calendar" }>;
+
+interface CalendarProps {
+  route: CalendarRoute;
+  navigate: (route: Route) => void;
+}
+
+/** Category totals in catalog order for the day summary. */
+function categorySlices(
+  totals: Map<string | null, number>,
+  categoryById: Map<string, Category>,
+): Slice[] {
+  return [...totals.entries()]
+    .map(([id, ms]) => {
+      const category = id ? categoryById.get(id) : undefined;
+      return {
+        key: id ?? "none",
+        label: category?.name ?? "Uncategorized",
+        color: category?.color ?? "var(--fg-ghost)",
+        ms,
+      };
+    })
+    .sort(
+      (a, b) =>
+        (categoryById.get(a.key)?.sort ?? Number.MAX_SAFE_INTEGER) -
+        (categoryById.get(b.key)?.sort ?? Number.MAX_SAFE_INTEGER),
+    );
+}
+
+export function Calendar({ route, navigate }: CalendarProps) {
+  const { t } = useI18n();
+  const { settings } = useSettings();
+  const aiStatus = useAiStatus();
+  const catalog = useCatalog();
+  const { categoryById, projectById } = catalog;
+  const review = useEntryReview(route.entryId);
+
+  const scale: CalendarScale = route.scale ?? "day";
+  const date = useMemo(
+    () => (route.date ? parseLocalDate(route.date) : currentCalendarDay(new Date())),
+    [route.date],
+  );
+  const range = useMemo(() => calendarRange(scale, date), [scale, date]);
+  const startMs = range.start.getTime();
+  const endMs = range.end.getTime();
+  // Month shows whole weeks, Monday first.
+  const grid = useMemo(() => {
+    const start = calendarDay(startOfWeek(range.start));
+    const lastDay = addDays(range.end, -1);
+    const end = calendarDay(addDays(startOfWeek(lastDay), 7));
+    let weeks = 0;
+    for (let day = start; day < end; day = addDays(day, 7)) weeks++;
+    return { start, end, weeks };
+  }, [range]);
+
+  const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [segments, setSegments] = useState<ActivitySegment[]>([]);
+  const [cells, setCells] = useState<RollupCell[]>([]);
+  const [breakEntries, setBreakEntries] = useState<BreakEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const [now, setNow] = useState(Date.now);
+
+  // Responses for a range the user already left are dropped.
+  const rangeKey = `${scale}:${startMs}`;
+  const shownKey = useRef(rangeKey);
+  shownKey.current = rangeKey;
+
+  /** Reads the range without rebuilding (push events land here). */
+  const refresh = useCallback(async (): Promise<void> => {
+    setNow(Date.now());
+    const key = `${scale}:${startMs}`;
+    try {
+      if (scale === "month") {
+        const next = await api.entryRollup(
+          { startMs: grid.start.getTime(), endMs: grid.end.getTime() },
+          calendarDayEdges(grid.start, grid.end),
+          "category",
+        );
+        const breakList = await api.listBreaks(startMs, endMs);
+        if (shownKey.current === key) {
+          setCells(next);
+          setBreakEntries(breakList);
+        }
+      } else {
+        const [list, snapshot, breakList] = await Promise.all([
+          api.listTimeEntries(startMs, endMs - 1),
+          scale === "day" ? api.fetchActivitySnapshot(startMs) : null,
+          api.listBreaks(startMs, endMs),
+        ]);
+        if (shownKey.current === key) {
+          setEntries(list);
+          setBreakEntries(breakList);
+          if (snapshot) {
+            setSegments(
+              snapshot.segments.filter(
+                (segment) => segment.startedAt >= startMs && segment.startedAt < endMs,
+              ),
+            );
+          }
+        }
+      }
+      setError(null);
+    } catch (cause) {
+      setError(describeError(cause));
+    }
+  }, [scale, startMs, endMs, grid]);
+
+  /**
+   * Full load: rebuild the range's entries from its segments (a past day
+   * may never have been built), then read. The rebuild emits
+   * `entries-changed`, which is why `refresh` must not rebuild.
+   */
+  const load = useCallback(async (): Promise<void> => {
+    const key = `${scale}:${startMs}`;
+    setLoading(true);
+    try {
+      const [list, snapshot, breakList] = await Promise.all([
+        api.rebuildTimeEntries(startMs, endMs - 1),
+        scale === "day" ? api.fetchActivitySnapshot(startMs) : null,
+        api.listBreaks(startMs, endMs),
+      ]);
+      if (shownKey.current !== key) return;
+      setBreakEntries(breakList);
+      if (scale === "month") {
+        await refresh();
+      } else {
+        setEntries(list);
+        setError(null);
+      }
+      // The snapshot runs to now; keep only this day's segments.
+      setSegments(
+        snapshot?.segments.filter(
+          (segment) => segment.startedAt >= startMs && segment.startedAt < endMs,
+        ) ?? [],
+      );
+    } catch (cause) {
+      setError(describeError(cause));
+    } finally {
+      setLoading(false);
+    }
+  }, [scale, startMs, endMs, refresh]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useTauriEvent(api.ENTRIES_CHANGED, () => void refresh());
+  useTauriEvent(api.ACTIVITY_CHANGED, () => void refresh());
+  useTauriEvent(api.BREAK_STATE_CHANGED, () => void refresh());
+  useTauriEvent(api.SUGGESTION_READY, () => void refresh());
+
+  useEffect(() => {
+    let timer: number | undefined;
+    const update = (): void => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      setNow(Date.now());
+      void refresh();
+    };
+    const sync = (): void => {
+      window.clearInterval(timer);
+      timer = undefined;
+      if (document.visibilityState === "visible" && document.hasFocus()) {
+        update();
+        timer = window.setInterval(update, 15_000);
+      }
+    };
+    document.addEventListener("visibilitychange", sync);
+    window.addEventListener("focus", sync);
+    window.addEventListener("blur", sync);
+    sync();
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", sync);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("blur", sync);
+    };
+  }, [refresh]);
+
+  // Another view can open an entry or review mode here.
+  const { select } = review;
+  useEffect(() => {
+    if (route.entryId) select(route.entryId);
+  }, [route.entryId, select]);
+
+  const visible = useMemo(
+    () => entries.filter((entry) => entryEnd(entry, now) > startMs && entry.startedAt < endMs),
+    [entries, startMs, endMs, now],
+  );
+  /** Entries waiting on the user, oldest first (review mode's queue). */
+  const reviewQueue = useMemo(
+    () => (scale === "month" ? [] : visible.filter(isReviewable)),
+    [visible, scale],
+  );
+  const processingCount = useMemo(
+    () => visible.filter((entry) => blockState(entry) === "processing").length,
+    [visible],
+  );
+
+  const startReviewMode = useCallback((): void => {
+    setReviewing(true);
+    select(reviewQueue[0]?.id);
+  }, [reviewQueue, select]);
+
+  const wantsReview = useRef(route.review === true);
+  useEffect(() => {
+    if (route.review) wantsReview.current = true;
+  }, [route.review]);
+  useEffect(() => {
+    if (!wantsReview.current || loading) return;
+    wantsReview.current = false;
+    startReviewMode();
+  }, [loading, startReviewMode]);
+
+  const go = (next: Partial<CalendarRoute>): void => {
+    setReviewing(false);
+    select(undefined);
+    navigate({
+      name: "calendar",
+      scale: next.scale ?? scale,
+      date: next.date ?? localDateString(date),
+    });
+  };
+
+  /** After an action in review mode, move on to the next pending entry. */
+  const advanceFrom = useCallback(
+    async (id: string): Promise<void> => {
+      const fresh = await api.listTimeEntries(startMs, endMs - 1);
+      if (shownKey.current !== `${scale}:${startMs}`) return;
+      setEntries(fresh);
+      if (!reviewing) return;
+      const queue = fresh.filter(isReviewable);
+      const current = fresh.find((entry) => entry.id === id);
+      const next =
+        queue.find((entry) => entry.id !== id && current && entry.startedAt > current.startedAt) ??
+        queue.find((entry) => entry.id !== id);
+      select(next?.id);
+    },
+    [scale, startMs, endMs, reviewing, select],
+  );
+
+  const accept = useCallback(
+    async (id: string): Promise<void> => {
+      if (await review.accept(id)) await advanceFrom(id);
+    },
+    [review, advanceFrom],
+  );
+  const reject = useCallback(
+    async (id: string): Promise<void> => {
+      if (await review.reject(id)) await advanceFrom(id);
+    },
+    [review, advanceFrom],
+  );
+
+  // Page shortcuts. The review sheet owns ⌘↵, ⌘⌫, S, and Esc; the panel
+  // owns 1–9, C, P, and E.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (isTyping(event.target)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (event.key === "Escape") {
+        setReviewing(false);
+      } else if (key === "r" && scale !== "month") {
+        event.preventDefault();
+        startReviewMode();
+      } else if ((key === "j" || key === "k") && visible.length > 0) {
+        event.preventDefault();
+        const list = reviewing ? reviewQueue : visible;
+        if (list.length === 0) return;
+        const index = list.findIndex((entry) => entry.id === review.selectedId);
+        const step = key === "j" ? 1 : -1;
+        const nextIndex =
+          index === -1
+            ? step === 1
+              ? 0
+              : list.length - 1
+            : (index + step + list.length) % list.length;
+        select(list[nextIndex].id);
+      } else if (
+        (event.key === "Backspace" || event.key === "Delete") &&
+        review.selectedId &&
+        !document.querySelector("dialog[open]")
+      ) {
+        event.preventDefault();
+        // Approved entries are locked: say so, the panel beside it has Unapprove.
+        if (review.detail?.entry.id === review.selectedId && isLocked(review.detail.entry)) {
+          setError("Approved entries can't be deleted. Unapprove this one first.");
+          return;
+        }
+        const idToDelete = review.selectedId;
+        void (async () => {
+          try {
+            await api.deleteTimeEntry(idToDelete);
+            if (reviewing) {
+              await advanceFrom(idToDelete);
+            } else {
+              select(undefined);
+            }
+          } catch (cause) {
+            setError(describeError(cause));
+          }
+        })();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    scale,
+    visible,
+    reviewQueue,
+    reviewing,
+    review.selectedId,
+    review.detail,
+    select,
+    startReviewMode,
+    advanceFrom,
+  ]);
+
+  const daysInRange =
+    scale === "day"
+      ? 1
+      : scale === "week"
+        ? 7
+        : new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  const summary = useMemo(() => {
+    const byCategory = new Map<string | null, number>();
+    let workMs = 0;
+    let reviewedMs = 0;
+    let count = 0;
+    let toReview = 0;
+    if (scale === "month") {
+      const firstDay = calendarDayEdges(grid.start, range.start).length - 1;
+      for (const cell of cells) {
+        if (cell.bucket < firstDay || cell.bucket >= firstDay + daysInRange) continue;
+        const key = cell.key ?? null;
+        byCategory.set(key, (byCategory.get(key) ?? 0) + cell.ms);
+        if (countsAsWork(key, categoryById)) workMs += cell.ms;
+        reviewedMs += cell.approvedMs;
+        count += cell.entries;
+        toReview += cell.pending;
+      }
+    } else {
+      for (const entry of visible) {
+        const ms = durationOf(entry, now);
+        const key = entry.categoryId ?? null;
+        byCategory.set(key, (byCategory.get(key) ?? 0) + ms);
+        if (countsAsWork(key, categoryById)) workMs += ms;
+        if (entry.status === "approved") reviewedMs += ms;
+      }
+      count = visible.length;
+      toReview = reviewQueue.length;
+    }
+    return {
+      categories: categorySlices(byCategory, categoryById),
+      workMs,
+      reviewedMs,
+      count,
+      toReview,
+    };
+  }, [scale, cells, visible, reviewQueue, categoryById, grid, range, daysInRange, now]);
+
+  const reviewPosition =
+    reviewing && review.selectedId
+      ? (() => {
+          const index = reviewQueue.findIndex((entry) => entry.id === review.selectedId);
+          return index === -1 ? undefined : { index, total: reviewQueue.length };
+        })()
+      : undefined;
+
+  const mergeCandidates = useMemo(() => {
+    if (!review.detail) return undefined;
+    const current = review.detail.entry;
+    const prev = entries.find((e) => e.id !== current.id && e.endedAt === current.startedAt);
+    const next = entries.find((e) => e.id !== current.id && e.startedAt === current.endedAt);
+    return { prev, next };
+  }, [entries, review.detail]);
+
+  const targetMs = targetMsFor(settings, scale, daysInRange);
+  const title =
+    scale === "day"
+      ? date.toLocaleDateString(undefined, {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+        })
+      : rangeLabel(scale, date);
+
+  return (
+    <div className="calendar-view flex h-full min-h-0 flex-col overflow-hidden bg-canvas text-fg">
+      <PageHeader title={title}>
+        <div className="flex shrink-0 justify-end">
+          {reviewQueue.length > 0 && (
+            <button
+              type="button"
+              onClick={startReviewMode}
+              className="flex items-center gap-1.5 whitespace-nowrap rounded-full border border-review/30 bg-review/15 px-3 py-1 font-semibold text-[12px] text-review transition-colors hover:bg-review/25"
+            >
+              <span>Review {reviewQueue.length} pending</span>
+              <kbd className="rounded bg-review/20 px-1 text-[10px]">R</kbd>
+            </button>
+          )}
+        </div>
+        <DateStepper
+          unit={scale}
+          onStep={(direction) => go({ date: localDateString(stepDate(scale, date, direction)) })}
+          onToday={() => go({ date: localDateString(currentCalendarDay(new Date())) })}
+          isToday={now >= startMs && now < endMs}
+        />
+        <ScaleControl
+          name="calendar-scale"
+          value={scale}
+          onChange={(next) => go({ scale: next })}
+        />
+      </PageHeader>
+
+      <AiEngineBanner status={aiStatus} />
+      {error && (
+        <div className="px-4 pt-3">
+          <InlineError message={error} onRetry={load} />
+        </div>
+      )}
+
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_320px] gap-4 overflow-hidden p-4 sharper:gap-0 sharper:p-0">
+        <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-sm sharper:rounded-none sharper:border-0 sharper:shadow-none">
+          {scale === "day" && (
+            <DayView
+              key={startMs}
+              dayStart={startMs}
+              entries={visible}
+              segments={segments}
+              breaks={breakEntries}
+              loading={loading}
+              selectedId={review.selectedId}
+              categoryById={categoryById}
+              projectById={projectById}
+              onSelect={select}
+              onEmpty={() => {
+                select(undefined);
+                setReviewing(false);
+              }}
+              onCreate={async (startedAt, endedAt) => {
+                try {
+                  await api.createTimeEntry({
+                    startedAt,
+                    endedAt,
+                    description: "Untitled session",
+                    review: true,
+                  });
+                  await refresh();
+                } catch (cause) {
+                  setError(describeError(cause));
+                }
+              }}
+              splitPick={
+                review.splitting?.stage === "pick" && review.selectedId
+                  ? { id: review.selectedId, at: review.splitting.at }
+                  : undefined
+              }
+              onPickSplit={review.pickSplit}
+              now={now}
+            />
+          )}
+          {scale === "week" && (
+            <WeekView
+              weekStart={range.start}
+              entries={visible}
+              breaks={breakEntries}
+              loading={loading}
+              selectedId={review.selectedId}
+              categoryById={categoryById}
+              projectById={projectById}
+              onSelect={select}
+              onOpenDay={(day) => go({ scale: "day", date: day })}
+              splitPick={
+                review.splitting?.stage === "pick" && review.selectedId
+                  ? { id: review.selectedId, at: review.splitting.at }
+                  : undefined
+              }
+              onPickSplit={review.pickSplit}
+              now={now}
+            />
+          )}
+          {scale === "month" && (
+            <MonthView
+              gridStart={grid.start}
+              weeks={grid.weeks}
+              month={range.start.getMonth()}
+              cells={cells}
+              categoryById={categoryById}
+              onOpenDay={(day) => go({ scale: "day", date: day })}
+            />
+          )}
+        </div>
+
+        <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-sm sharper:rounded-none sharper:border-0 sharper:border-l sharper:shadow-none">
+          {review.detail ? (
+            <EntryReviewSheet
+              review={review}
+              categories={catalog.categories}
+              projects={catalog.projects}
+              reviewPosition={reviewPosition}
+              mergeCandidates={mergeCandidates}
+              onAccept={(id) => void accept(id)}
+              onReject={(id) => void reject(id)}
+              pickSplitOnTimeline={
+                scale !== "month" && visible.some((entry) => entry.id === review.selectedId)
+              }
+              onClose={() => {
+                select(undefined);
+                setReviewing(false);
+              }}
+            />
+          ) : reviewing ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+              <div className="text-[22px] text-accent">✓</div>
+              <div className="font-semibold text-[13px] text-fg-strong">
+                {t("calendar.allCaughtUp")}
+              </div>
+              <div className="text-[11.5px] text-fg-soft">
+                {formatDuration(summary.reviewedMs)} reviewed{" "}
+                {scale === "day" ? "today" : "this week"}
+                {processingCount > 0 && ` · ${processingCount} still categorizing`}
+              </div>
+              <button
+                type="button"
+                onClick={() => setReviewing(false)}
+                className="mt-2 rounded-md border border-line px-3 py-1 text-[11.5px] text-fg-soft hover:bg-surface hover:text-fg"
+              >
+                Back to summary
+              </button>
+            </div>
+          ) : (
+            <RangeSummary
+              title={
+                scale === "day"
+                  ? "Day summary"
+                  : scale === "week"
+                    ? "Week summary"
+                    : "Month summary"
+              }
+              workMs={summary.workMs}
+              targetMs={targetMs}
+              targetLabel={formatTargetHours(targetMs)}
+              entries={summary.count}
+              processing={processingCount}
+              categories={summary.categories}
+              topApps={
+                scale === "day"
+                  ? timeByApp(segments, now).map(({ app, ms }) => ({ app, ms }))
+                  : undefined
+              }
+            />
+          )}
+        </aside>
+      </div>
+    </div>
+  );
+}

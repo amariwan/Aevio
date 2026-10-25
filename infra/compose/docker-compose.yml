@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: aevio
+      POSTGRES_USER: aevio
+      POSTGRES_PASSWORD: ${AEVIO_DB_PASSWORD:?set in .env}
+    volumes:
+      - aevio-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aevio -d aevio"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.server-postgres
+    image: aevio-server:local
+    environment:
+      AEVIO_SERVER_DATABASE_URL: postgres://aevio:${AEVIO_DB_PASSWORD}@postgres/aevio
+      AEVIO_SERVER_TOKEN: ${AEVIO_SERVER_TOKEN:?set in .env}
+      AEVIO_SERVER_TOKEN_WORKSPACES: ${AEVIO_SERVER_TOKEN_WORKSPACES:-workspace-main}
+      AEVIO_SERVER_TOKEN_PERMISSIONS: ${AEVIO_SERVER_TOKEN_PERMISSIONS:-read,write}
+      AEVIO_SERVER_BIND: 0.0.0.0:47832
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:47832:47832"
+    restart: unless-stopped
+
+volumes:
+  aevio-postgres:
