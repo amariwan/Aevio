@@ -29,7 +29,6 @@ import { MyTimesheet } from "@/features/timesheets/MyTimesheet";
 import { Notes } from "@/features/notes";
 import { Timesheets } from "@/features/timesheets/Timesheets";
 import { Tasks } from "@/features/tasks";
-import { Timeline } from "@/features/timeline";
 import { Teams } from "@/features/teams";
 import { useBreaks } from "@/hooks/useBreaks";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
@@ -45,7 +44,7 @@ import { motionSpring, motionTransition, pageVariants } from "@/lib/motion";
 import { hasPrimaryModifier } from "@/lib/platform";
 import { isPluginRoute } from "@/lib/plugins";
 import { isTauri } from "@/lib/tauri";
-import type { ActivitySnapshot, ActivityTick, Route } from "@/lib/types";
+import type { ActivitySegment, ActivitySnapshot, ActivityTick, Route } from "@/lib/types";
 
 const SIDEBAR_COLLAPSED_KEY = "aevio.sidebarCollapsed";
 
@@ -110,6 +109,7 @@ export default function App() {
   const [captureEnabled, setCaptureEnabledState] = useState(true);
   const [trackingActive, setTrackingActive] = useState(true);
   const [currentApp, setCurrentApp] = useState<string | undefined>(undefined);
+  const [currentKind, setCurrentKind] = useState<ActivitySegment["kind"]>();
   const [pendingCount, setPendingCount] = useState(0);
   // Bumped to remount the Calendar, so a review request always starts fresh
   // on today, even when that exact route is already showing.
@@ -244,6 +244,7 @@ export default function App() {
         } else {
           setCurrentApp(undefined);
         }
+        setCurrentKind(snapshot.current?.kind);
       })
       .catch((err) => {
         console.error("Failed to load activity snapshot", err);
@@ -260,6 +261,7 @@ export default function App() {
     } else {
       setCurrentApp(undefined);
     }
+    setCurrentKind(payload.current?.kind);
   };
   useTauriEvent<ActivityTick>(api.ACTIVITY_TICK, adoptCapture);
   useTauriEvent<ActivitySnapshot>(api.ACTIVITY_CHANGED, adoptCapture);
@@ -317,8 +319,6 @@ export default function App() {
     switch (currentRoute.name) {
       case "dashboard":
         return <Dashboard navigate={navigate} />;
-      case "timeline":
-        return <Timeline />;
       case "initiatives":
         return <Initiatives />;
       case "notes":
@@ -484,7 +484,12 @@ export default function App() {
               trackingActive={trackingActive}
               captureEnabled={captureEnabled}
               currentApp={currentApp}
+              currentKind={currentKind}
               onToggleCapture={handleToggleCapture}
+              onStartBreak={() => void api.startBreak()}
+              onStartSession={(kind) =>
+                void api.startSession(kind, kind[0].toUpperCase() + kind.slice(1))
+              }
               pendingCount={pendingCount}
               version={appVersion}
             />

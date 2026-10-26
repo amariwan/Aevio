@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useI18n } from "@/hooks/useI18n";
 import * as api from "@/lib/api";
 import type { StaffingSnapshot } from "@/lib/types";
 import { StaffingDirectory } from "./StaffingDirectory";
@@ -27,6 +28,7 @@ const empty: StaffingSnapshot = {
 };
 
 export function Staffing() {
+  const { t } = useI18n();
   const [data, setData] = useState<StaffingSnapshot>(empty);
   const [error, setError] = useState<string>();
   const reload = async () => {
@@ -45,12 +47,11 @@ export function Staffing() {
     <main className="min-h-0 flex-1 overflow-y-auto bg-canvas p-6">
       <div className="mx-auto max-w-7xl space-y-6">
         <header>
-          <p className="text-xs font-semibold tracking-widest text-accent uppercase">Operations</p>
-          <h1 className="mt-1 text-3xl font-semibold text-fg-strong">Staffing & Freelancers</h1>
-          <p className="mt-2 max-w-3xl text-sm text-fg-muted">
-            People, capacity, matching, assignments, contracts, pipeline and margin in one durable
-            local workspace.
+          <p className="text-xs font-semibold tracking-widest text-accent uppercase">
+            {t("staffing.operationsLabel")}
           </p>
+          <h1 className="mt-1 text-3xl font-semibold text-fg-strong">{t("staffing.title")}</h1>
+          <p className="mt-2 max-w-3xl text-sm text-fg-muted">{t("staffing.description")}</p>
         </header>
         {error && (
           <div

@@ -1,6 +1,21 @@
 import { useState } from "react";
+import { useI18n } from "@/hooks/useI18n";
 import * as api from "@/lib/api";
 import type { StaffingFreelancer } from "@/lib/types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 
 export function StaffingDirectory({
   freelancers,
@@ -11,10 +26,13 @@ export function StaffingDirectory({
   onSaved: () => Promise<void>;
   onError: (message: string) => void;
 }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState("lead");
   const [busy, setBusy] = useState(false);
+
   const create = async () => {
     if (!name.trim()) return;
     setBusy(true);
@@ -27,6 +45,8 @@ export function StaffingDirectory({
       });
       setName("");
       setEmail("");
+      setStatus("lead");
+      setOpen(false);
       await onSaved();
     } catch (e) {
       onError(api.describeError(e));
@@ -34,69 +54,82 @@ export function StaffingDirectory({
       setBusy(false);
     }
   };
+
   return (
-    <section className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
-      <div className="rounded-xl border border-line bg-surface p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-fg-strong">Freelancer directory</h2>
-            <p className="text-xs text-fg-muted">
-              Profiles, seniority, skills and engagement status.
-            </p>
-          </div>
-          <span className="text-xs text-fg-muted">{freelancers.length} profiles</span>
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold text-fg-strong">
+            {t("staffing.freelancerDirectory")}
+          </h2>
+          <p className="text-xs text-fg-muted">
+            {t("staffing.freelancerDirectoryDescription", { count: freelancers.length })}
+          </p>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {freelancers.map((person) => (
-            <div key={person.id} className="rounded-lg border border-line p-3">
-              <div className="font-medium text-fg-strong">{person.name}</div>
-              <div className="text-xs text-fg-muted">
-                {person.email || "No email"} · {person.status}
-              </div>
-              <div className="mt-2 text-xs text-fg-muted">
-                {person.seniority || "Seniority not set"} · {person.location || "Location not set"}
-              </div>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger render={<Button />}>{t("staffing.addFreelancer")}</DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{t("staffing.addFreelancer")}</DialogTitle>
+              <DialogDescription>{t("staffing.createFreelancerProfile")}</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={t("staffing.name")}
+                aria-label={t("staffing.name")}
+              />
+              <Input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder={t("staffing.email")}
+                aria-label={t("staffing.email")}
+                type="email"
+              />
+              <NativeSelect
+                value={status}
+                aria-label={t("staffing.freelancerStatus")}
+                onChange={(e) => setStatus(e.target.value)}
+              >
+                <NativeSelectOption value="lead">{t("staffing.lead")}</NativeSelectOption>
+                <NativeSelectOption value="active">{t("staffing.active")}</NativeSelectOption>
+                <NativeSelectOption value="paused">{t("staffing.paused")}</NativeSelectOption>
+                <NativeSelectOption value="archived">{t("staffing.archived")}</NativeSelectOption>
+              </NativeSelect>
             </div>
-          ))}
-        </div>
+            <DialogFooter>
+              <Button type="button" disabled={busy || !name.trim()} onClick={() => void create()}>
+                {busy ? t("staffing.saving") : t("staffing.saveFreelancer")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
-      <div className="rounded-xl border border-line bg-surface p-5">
-        <h2 className="font-semibold text-fg-strong">Add freelancer</h2>
-        <div className="mt-4 space-y-3">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Name"
-            aria-label="Freelancer name"
-            className="w-full rounded-lg border border-line bg-canvas px-3 py-2 text-sm"
-          />
-          <input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Email"
-            aria-label="Freelancer email"
-            className="w-full rounded-lg border border-line bg-canvas px-3 py-2 text-sm"
-          />
-          <select
-            value={status}
-            aria-label="Freelancer status"
-            onChange={(e) => setStatus(e.target.value)}
-            className="w-full rounded-lg border border-line bg-canvas px-3 py-2 text-sm"
-          >
-            <option value="lead">Lead</option>
-            <option value="active">Active</option>
-            <option value="paused">Paused</option>
-            <option value="archived">Archived</option>
-          </select>
-          <button
-            type="button"
-            disabled={busy || !name.trim()}
-            onClick={() => void create()}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground disabled:opacity-50"
-          >
-            Save freelancer
-          </button>
-        </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {freelancers.map((person) => (
+          <Card key={person.id} className="border-line/70 bg-surface">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base text-fg-strong">{person.name}</CardTitle>
+                <Badge variant={person.status === "active" ? "default" : "secondary"}>
+                  {person.status}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-1 text-xs text-fg-muted">
+              <p>{person.email || t("staffing.noEmail")}</p>
+              <p>{person.seniority || t("staffing.seniorityNotSet")}</p>
+              <p>{person.location || t("staffing.locationNotSet")}</p>
+              <p className="text-[10px] text-fg-faint">{person.timezone}</p>
+            </CardContent>
+          </Card>
+        ))}
+        {freelancers.length === 0 && (
+          <p className="col-span-full py-8 text-sm text-fg-muted">
+            {t("staffing.noFreelancerProfiles")}
+          </p>
+        )}
       </div>
     </section>
   );

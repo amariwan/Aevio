@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useI18n } from "@/hooks/useI18n";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -12,6 +13,7 @@ type Props = {
 };
 
 export function PluginUpdatePolicyPanel({ pluginId, releases }: Props) {
+  const { t } = useI18n();
   const [policy, setPolicy] = useState<PluginUpdatePolicy>();
   const [pinnedVersion, setPinnedVersion] = useState("");
   const [busy, setBusy] = useState(false);
@@ -53,13 +55,13 @@ export function PluginUpdatePolicyPanel({ pluginId, releases }: Props) {
   return (
     <Card className="bg-surface">
       <CardHeader>
-        <CardTitle className="text-base">Update policy</CardTitle>
+        <CardTitle className="text-base">{t("pluginStore.updatePolicy")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         {error && <p className="text-sm text-danger">{error}</p>}
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1 text-xs text-fg-muted">
-            Channel
+            {t("pluginStore.channel")}
             <NativeSelect
               value={policy.channel}
               disabled={busy}
@@ -67,13 +69,15 @@ export function PluginUpdatePolicyPanel({ pluginId, releases }: Props) {
                 void save({ channel: event.target.value as PluginUpdatePolicy["channel"] })
               }
             >
-              <NativeSelectOption value="stable">Stable</NativeSelectOption>
-              <NativeSelectOption value="beta">Beta</NativeSelectOption>
-              <NativeSelectOption value="development">Development</NativeSelectOption>
+              <NativeSelectOption value="stable">{t("pluginStore.stable")}</NativeSelectOption>
+              <NativeSelectOption value="beta">{t("pluginStore.beta")}</NativeSelectOption>
+              <NativeSelectOption value="development">
+                {t("pluginStore.development")}
+              </NativeSelectOption>
             </NativeSelect>
           </label>
           <label className="space-y-1 text-xs text-fg-muted">
-            Pinned version
+            {t("pluginStore.pinnedVersion")}
             <NativeSelect
               value={pinnedVersion}
               disabled={busy}
@@ -83,7 +87,7 @@ export function PluginUpdatePolicyPanel({ pluginId, releases }: Props) {
                 void save({ pinnedVersion: value || undefined });
               }}
             >
-              <NativeSelectOption value="">No pin</NativeSelectOption>
+              <NativeSelectOption value="">{t("pluginStore.noPin")}</NativeSelectOption>
               {availableVersions.map((version) => (
                 <NativeSelectOption key={version} value={version}>
                   {version}
@@ -98,7 +102,9 @@ export function PluginUpdatePolicyPanel({ pluginId, releases }: Props) {
           disabled={busy}
           onClick={() => void save({ automaticUpdates: !policy.automaticUpdates })}
         >
-          Automatic updates: {policy.automaticUpdates ? "On" : "Off"}
+          {policy.automaticUpdates
+            ? t("pluginStore.automaticUpdatesOn")
+            : t("pluginStore.automaticUpdatesOff")}
         </Button>
       </CardContent>
     </Card>

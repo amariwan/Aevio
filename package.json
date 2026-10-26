@@ -1,7 +1,7 @@
 {
   "name": "aevio",
   "private": true,
-  "version": "0.9.39",
+  "version": "0.9.40",
   "packageManager": "bun@1.4.3",
   "workspaces": [
     "apps/*",

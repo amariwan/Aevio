@@ -22,6 +22,7 @@
 //! store locks. Nothing holds an activity lock while asking for the engine.
 
 pub mod engine;
+pub mod full_screen;
 pub mod stopwatch;
 pub mod store;
 pub mod surface;
@@ -304,7 +305,11 @@ fn publish(app: &AppHandle, runtime: &BreakRuntime, view: &BreakState) {
     }
     *last = Some(view.clone());
     drop(last);
-    surface::sync(app, view.phase != Phase::Idle || view.stopwatch.is_some());
+    surface::sync(
+        app,
+        (view.phase != Phase::Idle && view.phase != Phase::OnBreak) || view.stopwatch.is_some(),
+    );
+    full_screen::sync(app, view.phase == Phase::OnBreak && view.current.is_some());
     let _ = app.emit(EVENT_BREAK_STATE, view);
 }
 

@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "aevio"
-version = "0.9.39"
+version = "0.9.40"
 dependencies = [
  "aevio-contracts",
  "aevio-core",
@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "aevio-cli"
-version = "0.9.39"
+version = "0.9.40"
 dependencies = [
  "aevio-contracts",
  "aevio-core",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "aevio-server"
-version = "0.9.39"
+version = "0.9.40"
 dependencies = [
  "aevio-contracts",
  "aevio-core",

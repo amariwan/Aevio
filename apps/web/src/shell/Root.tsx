@@ -5,6 +5,7 @@ import Pulse from "@/features/pulse/Pulse";
 import Reminder from "@/features/pulse/Reminder";
 import Widget from "@/features/widget/Widget";
 import ProductivitySummary from "@/features/summary/ProductivitySummary";
+import BreakScreen from "@/features/pulse/BreakScreen";
 import App from "./App";
 
 // One bundle, four windows: the menu-bar panel is `pulse`, the break panel is
@@ -29,5 +30,6 @@ export default function Root() {
   if (label === "reminder") return <Reminder />;
   if (label === "widget") return <Widget />;
   if (label === "summary") return <ProductivitySummary />;
+  if (label === "break-screen") return <BreakScreen />;
   return <App />;
 }

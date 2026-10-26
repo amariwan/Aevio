@@ -116,9 +116,9 @@ export function ProductivityCoach() {
                   <Target className="size-4" aria-hidden="true" />
                 </span>
                 <div>
-                  <p className="text-xs text-fg-muted">Tagesziel</p>
+                  <p className="text-xs text-fg-muted">{t("coach.dailyGoal")}</p>
                   <p className="mt-0.5 truncate text-sm font-medium text-fg-strong">
-                    {snapshot.plan?.goal || "Noch offen"}
+                    {snapshot.plan?.goal || t("coach.open")}
                   </p>
                 </div>
               </div>
@@ -127,9 +127,10 @@ export function ProductivityCoach() {
                   <CheckCircle2 className="size-4" aria-hidden="true" />
                 </span>
                 <div>
-                  <p className="text-xs text-fg-muted">Erledigt</p>
+                  <p className="text-xs text-fg-muted">{t("coach.done")}</p>
                   <p className="mt-0.5 text-sm font-medium text-fg-strong">
-                    {snapshot.tasks.filter((task) => task.done).length} von {snapshot.tasks.length}
+                    {snapshot.tasks.filter((task) => task.done).length} {t("coach.of")}{" "}
+                    {snapshot.tasks.length}
                   </p>
                 </div>
               </div>
@@ -138,7 +139,7 @@ export function ProductivityCoach() {
                   <Clock3 className="size-4" aria-hidden="true" />
                 </span>
                 <div>
-                  <p className="text-xs text-fg-muted">Erfasst</p>
+                  <p className="text-xs text-fg-muted">{t("dashboard.tracked")}</p>
                   <p className="mt-0.5 text-sm font-medium text-fg-strong">
                     {formatDuration(snapshot.trackedMs)}
                   </p>

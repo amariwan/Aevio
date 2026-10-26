@@ -150,14 +150,12 @@ export function Finance() {
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-fg-muted">
-              Analyse und Finanzen
+              {t("finance.analyzeAndFinance")}
             </p>
             <h1 className="mt-1 text-2xl font-semibold text-fg-strong">
               {t("finance.profitabilityCockpit")}
             </h1>
-            <p className="mt-1 text-sm text-fg-muted">
-              Tracked Time, Planung, Rates, Margen und Budgetwarnungen.
-            </p>
+            <p className="mt-1 text-sm text-fg-muted">{t("finance.subtitle")}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Input
@@ -174,10 +172,10 @@ export function Finance() {
               className="w-36"
             />
             <Button type="button" onClick={() => void load()} disabled={busy}>
-              {busy ? "Lädt…" : "Aktualisieren"}
+              {busy ? t("finance.loading") : t("finance.refresh")}
             </Button>
             <Button type="button" variant="outline" onClick={() => void share()} disabled={busy}>
-              Dashboard teilen
+              {t("finance.shareDashboard")}
             </Button>
           </div>
         </header>
@@ -188,7 +186,7 @@ export function Finance() {
         )}
         {shareUrl && (
           <p className="rounded-md bg-success-soft px-3 py-2 text-sm text-success">
-            Freigabe erstellt: {shareUrl}
+            {t("finance.shareCreated", { url: shareUrl })}
           </p>
         )}
         <div className="flex gap-1 border-b border-line">
@@ -200,10 +198,10 @@ export function Finance() {
               onClick={() => setTab(item)}
             >
               {item === "overview"
-                ? "Übersicht"
+                ? t("finance.overviewTab")
                 : item === "planning"
-                  ? "Resourcing & Capacity"
-                  : "Rates & Contracts"}
+                  ? t("finance.planningTab")
+                  : t("finance.commercialTab")}
             </Button>
           ))}
         </div>
@@ -211,12 +209,12 @@ export function Finance() {
           <>
             <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               {[
-                ["Tracked", hours(snapshot.trackedMs)],
-                ["Planned", hours(snapshot.plannedMs)],
-                ["Billable", hours(snapshot.billableMs)],
-                ["Revenue", money(snapshot.revenueCents)],
+                [t("finance.tracked"), hours(snapshot.trackedMs)],
+                [t("finance.planned"), hours(snapshot.plannedMs)],
+                [t("finance.billable"), hours(snapshot.billableMs)],
+                [t("finance.revenue"), money(snapshot.revenueCents)],
                 [
-                  "Margin",
+                  t("finance.margin"),
                   `${money(snapshot.marginCents)}${snapshot.marginPercent == null ? "" : ` · ${snapshot.marginPercent.toFixed(1)}%`}`,
                 ],
               ].map(([label, value]) => (
@@ -231,20 +229,20 @@ export function Finance() {
               ))}
             </section>
             <SpendingRing
-              title="Kosten nach Projekt"
+              title={t("finance.costsByProject")}
               categories={spendingByProject}
               currency="USD"
               className="max-w-none"
             />
             <Card>
               <CardHeader>
-                <CardTitle>Tracked-Time-Pivot</CardTitle>
+                <CardTitle>{t("finance.trackedTimePivot")}</CardTitle>
               </CardHeader>
               <CardContent className="overflow-x-auto p-0">
                 <table className="w-full min-w-[820px] text-sm">
                   <thead className="border-b border-line text-left text-xs text-fg-muted">
                     <tr>
-                      <th className="px-5 py-3">Project / Client</th>
+                      <th className="px-5 py-3">{t("finance.projectClient")}</th>
                       <th className="px-3 py-3 text-right">{t("finance.tracked")}</th>
                       <th className="px-3 py-3 text-right">{t("finance.planned")}</th>
                       <th className="px-3 py-3 text-right">{t("finance.billable")}</th>
@@ -262,7 +260,7 @@ export function Finance() {
                         <td className="px-5 py-3">
                           <div className="font-medium text-fg-strong">{row.projectName}</div>
                           <div className="text-xs text-fg-muted">
-                            {row.clientName ?? "No client"}
+                            {row.clientName ?? t("finance.noClient")}
                           </div>
                         </td>
                         <td className="px-3 py-3 text-right">{hours(row.trackedMs)}</td>
@@ -282,18 +280,18 @@ export function Finance() {
                 </table>
                 {snapshot.rows.length === 0 && (
                   <p className="px-5 py-8 text-center text-sm text-fg-muted">
-                    Keine Zeitbuchungen im gewählten Zeitraum.
+                    {t("finance.noTimeEntries")}
                   </p>
                 )}
               </CardContent>
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>Margen- und Budgetwarnungen</CardTitle>
+                <CardTitle>{t("finance.marginBudgetWarnings")}</CardTitle>
               </CardHeader>
               <CardContent>
                 {snapshot.warnings.length === 0 ? (
-                  <p className="text-sm text-success">Keine Warnungen im Zeitraum.</p>
+                  <p className="text-sm text-success">{t("finance.noWarnings")}</p>
                 ) : (
                   <div className="flex flex-col gap-2">
                     {snapshot.warnings.map((warning, index) => (
@@ -314,17 +312,17 @@ export function Finance() {
           <section className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
             <Card>
               <CardHeader>
-                <CardTitle>Kapazität planen</CardTitle>
+                <CardTitle>{t("finance.planCapacity")}</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
                 <label className="text-sm text-fg-muted">
-                  Projekt
+                  {t("finance.project")}
                   <select
                     value={planProject}
                     onChange={(event) => setPlanProject(event.target.value)}
                     className="mt-1 h-8 w-full rounded-md border border-line bg-surface px-2 text-sm text-fg"
                   >
-                    <option value="">Alle / Overhead</option>
+                    <option value="">{t("finance.allOverhead")}</option>
                     {catalog.projects.map((project) => (
                       <option key={project.id} value={project.id}>
                         {project.name}
@@ -333,7 +331,7 @@ export function Finance() {
                   </select>
                 </label>
                 <label className="text-sm text-fg-muted">
-                  Person / Team
+                  {t("finance.personTeam")}
                   <input
                     value={planPerson}
                     onChange={(event) => setPlanPerson(event.target.value)}
@@ -341,7 +339,7 @@ export function Finance() {
                   />
                 </label>
                 <label className="text-sm text-fg-muted">
-                  Geplante Minuten
+                  {t("finance.plannedMinutes")}
                   <input
                     type="number"
                     min="0"
@@ -351,7 +349,7 @@ export function Finance() {
                   />
                 </label>
                 <Button type="button" onClick={() => void savePlan()} disabled={busy}>
-                  Kapazitätsplan speichern
+                  {t("finance.saveCapacityPlan")}
                 </Button>
               </CardContent>
             </Card>
@@ -361,7 +359,7 @@ export function Finance() {
               </CardHeader>
               <CardContent className="flex flex-col gap-2">
                 {plans.length === 0 ? (
-                  <p className="text-sm text-fg-muted">Noch keine Kapazitätspläne.</p>
+                  <p className="text-sm text-fg-muted">{t("finance.noCapacityPlans")}</p>
                 ) : (
                   plans.map((plan) => (
                     <div
@@ -370,7 +368,8 @@ export function Finance() {
                     >
                       <span>
                         {plan.personKey} ·{" "}
-                        {catalog.projectById.get(plan.projectId ?? "")?.name ?? "Overhead"}
+                        {catalog.projectById.get(plan.projectId ?? "")?.name ??
+                          t("finance.overhead")}
                       </span>
                       <span className="text-fg-muted">
                         {(plan.plannedMinutes / 60).toFixed(1)} h
@@ -386,7 +385,7 @@ export function Finance() {
           <section className="grid gap-4 xl:grid-cols-2">
             <Card>
               <CardHeader>
-                <CardTitle>Bill Rates & Cost Rates</CardTitle>
+                <CardTitle>{t("finance.billRatesCostRates")}</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
                 <select
@@ -394,7 +393,7 @@ export function Finance() {
                   onChange={(event) => setRateProject(event.target.value)}
                   className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-fg"
                 >
-                  <option value="">Projekt wählen</option>
+                  <option value="">{t("finance.chooseProject")}</option>
                   {catalog.projects.map((project) => (
                     <option key={project.id} value={project.id}>
                       {project.name}
@@ -422,7 +421,7 @@ export function Finance() {
                   onClick={() => void saveRate()}
                   disabled={busy || !rateProject}
                 >
-                  Rate Card speichern
+                  {t("finance.saveRateCard")}
                 </Button>
                 {rates.map((rate) => (
                   <div key={rate.projectId} className="flex justify-between text-sm text-fg-muted">
@@ -436,7 +435,7 @@ export function Finance() {
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>Retainer & Hybrid-Verträge</CardTitle>
+                <CardTitle>{t("finance.retainerHybridContracts")}</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
                 <select
@@ -444,7 +443,7 @@ export function Finance() {
                   onChange={(event) => setContractClient(event.target.value)}
                   className="h-8 rounded-md border border-line bg-surface px-2 text-sm text-fg"
                 >
-                  <option value="">Kunde wählen</option>
+                  <option value="">{t("finance.chooseClient")}</option>
                   {catalog.clients.map((client) => (
                     <option key={client.id} value={client.id}>
                       {client.name}
@@ -483,7 +482,7 @@ export function Finance() {
                   onClick={() => void saveContract()}
                   disabled={busy || !contractClient}
                 >
-                  Vertrag speichern
+                  {t("finance.saveContract")}
                 </Button>
                 {contracts.map((contract) => (
                   <div key={contract.id} className="flex justify-between text-sm text-fg-muted">

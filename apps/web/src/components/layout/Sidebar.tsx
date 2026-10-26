@@ -137,16 +137,6 @@ export function Sidebar({
               <rect x="14" y="14" width="7" height="7" rx="1" />
             </NavTab>
             <NavTab
-              active={currentName === "timeline"}
-              label="Timeline"
-              onSelect={() => onNavigate({ name: "timeline" })}
-            >
-              <path d="M4 5h16M4 12h16M4 19h16" />
-              <circle cx="8" cy="5" r="1" />
-              <circle cx="15" cy="12" r="1" />
-              <circle cx="11" cy="19" r="1" />
-            </NavTab>
-            <NavTab
               active={currentName === "focus"}
               label={t("nav.focus")}
               onSelect={() => onNavigate({ name: "focus" })}

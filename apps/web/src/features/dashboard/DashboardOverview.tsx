@@ -4,16 +4,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDuration } from "@/lib/format";
+import { useI18n } from "@/hooks/useI18n";
+import type { MessageKey } from "@/lib/i18n";
 import type { useDashboardData } from "./useDashboardData";
 
 type DashboardData = ReturnType<typeof useDashboardData>;
 
 function greeting(): string {
   const hour = new Date().getHours();
-  if (hour < 5) return "Working late";
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
+  if (hour < 5) return "dashboard.workingLate";
+  if (hour < 12) return "dashboard.goodMorning";
+  if (hour < 18) return "dashboard.goodAfternoon";
+  return "dashboard.goodEvening";
 }
 
 function dayLabel(date: Date): string {
@@ -39,40 +41,46 @@ export function DashboardOverview({
   data: DashboardData;
   onRefresh: () => void;
 }) {
+  const { t } = useI18n();
   const maxDay = Math.max(...data.days.map((day) => day.trackedMs), 1);
-  const currentApp = data.recentEntries[0]?.dominantApp ?? "Not tracking";
+  const currentApp = data.recentEntries[0]?.dominantApp ?? t("dashboard.notTracking");
   return (
     <Card className="mb-4 overflow-hidden border-line/80 bg-panel/80 shadow-sm">
       <CardHeader className="flex-row items-start justify-between gap-4 pb-4">
         <div>
           <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
-            {greeting()}
+            {t(greeting() as MessageKey)}
           </p>
-          <CardTitle className="text-2xl tracking-tight text-fg-strong">Your workspace</CardTitle>
-          <p className="mt-1 text-sm text-fg-muted">
-            A local overview of your recent focus and activity.
-          </p>
+          <CardTitle className="text-2xl tracking-tight text-fg-strong">
+            {t("dashboard.yourWorkspace")}
+          </CardTitle>
+          <p className="mt-1 text-sm text-fg-muted">{t("dashboard.workspaceSubtitle")}</p>
         </div>
         <Button variant="ghost" size="sm" onClick={onRefresh} disabled={data.loading}>
-          <RefreshCw className={data.loading ? "size-4 animate-spin" : "size-4"} /> Refresh
+          <RefreshCw className={data.loading ? "size-4 animate-spin" : "size-4"} />{" "}
+          {t("dashboard.refresh")}
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Stat
             icon={<Clock3 className="size-4" />}
-            label="Tracked"
+            label={t("dashboard.tracked")}
             value={formatDuration(data.metrics.weekMs)}
           />
           <Stat
             icon={<Activity className="size-4" />}
-            label="Focus"
+            label={t("dashboard.focus")}
             value={formatDuration(data.metrics.todayMs)}
           />
-          <Stat icon={<Eye className="size-4" />} label="Current" value={currentApp} />
+          <Stat
+            icon={<Eye className="size-4" />}
+            label={t("dashboard.current")}
+            value={currentApp}
+          />
           <Stat
             icon={<ListChecks className="size-4" />}
-            label="Needs review"
+            label={t("dashboard.needsReview")}
             value={`${data.metrics.pendingEntries}`}
           />
         </div>
@@ -80,10 +88,12 @@ export function DashboardOverview({
           <div className="rounded-xl border border-line/70 bg-surface/50 p-4">
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold text-fg-strong">Activity history</p>
-                <p className="text-xs text-fg-muted">Last 7 days</p>
+                <p className="text-sm font-semibold text-fg-strong">
+                  {t("dashboard.activityHistory")}
+                </p>
+                <p className="text-xs text-fg-muted">{t("dashboard.last7Days")}</p>
               </div>
-              <Badge variant="secondary">Local activity</Badge>
+              <Badge variant="secondary">{t("dashboard.localActivity")}</Badge>
             </div>
             <div className="flex h-28 items-end gap-1.5">
               {data.days.map((day) => (
@@ -106,8 +116,8 @@ export function DashboardOverview({
           <div className="rounded-xl border border-line/70 bg-surface/50 p-4">
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold text-fg-strong">Top projects</p>
-                <p className="text-xs text-fg-muted">Where your time went</p>
+                <p className="text-sm font-semibold text-fg-strong">{t("dashboard.topProjects")}</p>
+                <p className="text-xs text-fg-muted">{t("dashboard.whereTimeWent")}</p>
               </div>
               <Monitor className="size-4 text-accent" />
             </div>
@@ -132,7 +142,7 @@ export function DashboardOverview({
                 );
               })}
               {data.projectActivity.length === 0 && (
-                <p className="text-sm text-fg-muted">No activity recorded yet.</p>
+                <p className="text-sm text-fg-muted">{t("dashboard.noActivityRecorded")}</p>
               )}
             </div>
           </div>

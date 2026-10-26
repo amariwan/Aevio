@@ -1249,7 +1249,6 @@ export interface EntryFilters {
 
 export type Route =
   | { name: "dashboard" }
-  | { name: "timeline"; date?: string }
   | { name: "initiatives" }
   | { name: "notes" }
   | { name: "documents" }

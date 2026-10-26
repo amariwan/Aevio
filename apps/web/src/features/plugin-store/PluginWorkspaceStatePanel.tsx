@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useI18n } from "@/hooks/useI18n";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -24,6 +25,7 @@ export function PluginWorkspaceStatePanel({
   states,
   onSaved,
 }: Props) {
+  const { t } = useI18n();
   const [selectedPlugin, setSelectedPlugin] = useState("");
   const [busyId, setBusyId] = useState<string>();
   const [error, setError] = useState<string>();
@@ -62,21 +64,19 @@ export function PluginWorkspaceStatePanel({
   return (
     <Card className="bg-surface">
       <CardHeader>
-        <CardTitle className="text-base">Workspace plugin intent</CardTitle>
+        <CardTitle className="text-base">{t("pluginStore.workspacePluginIntent")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-xs text-fg-muted">
-          Server intent only. Each device still verifies artifacts and grants local permissions.
-        </p>
+        <p className="text-xs text-fg-muted">{t("pluginStore.workspacePluginIntentDescription")}</p>
         {error && <p className="text-sm text-danger">{error}</p>}
         {available.length > 0 && (
           <div className="flex gap-2">
             <NativeSelect
               value={selectedPlugin}
               onChange={(event) => setSelectedPlugin(event.target.value)}
-              aria-label="Plugin to add to workspace"
+              aria-label={t("pluginStore.pluginToAdd")}
             >
-              <NativeSelectOption value="">Add a plugin…</NativeSelectOption>
+              <NativeSelectOption value="">{t("pluginStore.addPlugin")}</NativeSelectOption>
               {available.map((entry) => (
                 <NativeSelectOption key={entry.manifest.id} value={entry.manifest.id}>
                   {entry.manifest.name}
@@ -98,12 +98,12 @@ export function PluginWorkspaceStatePanel({
                 setSelectedPlugin("");
               }}
             >
-              Add
+              {t("pluginStore.add")}
             </Button>
           </div>
         )}
         {states.length === 0 ? (
-          <p className="text-sm text-fg-muted">No workspace plugin intent has been published.</p>
+          <p className="text-sm text-fg-muted">{t("pluginStore.noWorkspacePluginIntent")}</p>
         ) : (
           states.map((state) => {
             const entry = entries.find((item) => item.manifest.id === state.pluginId);
@@ -117,7 +117,10 @@ export function PluginWorkspaceStatePanel({
                     {entry?.manifest.name ?? state.pluginId}
                   </p>
                   <p className="text-xs text-fg-muted">
-                    {state.requestedVersion ?? "latest"} · revision {state.revision}
+                    {t("pluginStore.requestedVersionRevision", {
+                      version: state.requestedVersion ?? t("pluginStore.latest"),
+                      revision: state.revision,
+                    })}
                   </p>
                 </div>
                 <NativeSelect
@@ -133,9 +136,11 @@ export function PluginWorkspaceStatePanel({
                     })
                   }
                 >
-                  <NativeSelectOption value="stable">Stable</NativeSelectOption>
-                  <NativeSelectOption value="beta">Beta</NativeSelectOption>
-                  <NativeSelectOption value="development">Development</NativeSelectOption>
+                  <NativeSelectOption value="stable">{t("pluginStore.stable")}</NativeSelectOption>
+                  <NativeSelectOption value="beta">{t("pluginStore.beta")}</NativeSelectOption>
+                  <NativeSelectOption value="development">
+                    {t("pluginStore.development")}
+                  </NativeSelectOption>
                 </NativeSelect>
                 <Button
                   size="sm"
@@ -150,7 +155,7 @@ export function PluginWorkspaceStatePanel({
                     })
                   }
                 >
-                  {state.enabled ? "Enabled" : "Disabled"}
+                  {state.enabled ? t("pluginStore.enabled") : t("pluginStore.disabled")}
                 </Button>
               </div>
             );

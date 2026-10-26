@@ -20,9 +20,20 @@ import {
   Square,
   Volume2,
 } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useBreaks } from "@/hooks/useBreaks";
 import { useI18n } from "@/hooks/useI18n";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
@@ -191,6 +202,11 @@ export function Focus() {
   const [musicTrackId, setMusicTrackId] = useState("silence");
   const [musicProgress, setMusicProgress] = useState(0);
   const [musicVolume, setMusicVolume] = useState(72);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [addSessionOpen, setAddSessionOpen] = useState(false);
+  const [newSessionLabel, setNewSessionLabel] = useState("");
+  const [newSessionMinutes, setNewSessionMinutes] = useState(25);
+  const sessionTimer = useRef<number | null>(null);
   const musicEngine = useRef<MusicEngine | null>(null);
   const breaks = useBreaks();
 
@@ -254,6 +270,12 @@ export function Focus() {
     }
   }, [musicVolume]);
   useEffect(() => () => stopMusicEngine(musicEngine.current), []);
+  useEffect(
+    () => () => {
+      if (sessionTimer.current !== null) window.clearTimeout(sessionTimer.current);
+    },
+    [],
+  );
   useTauriEvent<ActivitySnapshot>(api.ACTIVITY_CHANGED, setSnapshot);
   useTauriEvent<ActivityTick>(api.ACTIVITY_TICK, (tick) =>
     setSnapshot((previous) => ({ ...previous, ...tick })),
@@ -321,6 +343,34 @@ export function Focus() {
     void run(() => api.startSession("focus", value || undefined));
   };
 
+  const toggleCapture = (): void => {
+    const next = !snapshot.captureEnabled;
+    void run(() => api.setCaptureEnabled(next));
+  };
+
+  const openBlockerSettings = (): void => {
+    void api.openBreakSettings().catch((cause) => setError(describeError(cause)));
+  };
+
+  const scheduleSessionStop = (minutes: number): void => {
+    if (sessionTimer.current !== null) window.clearTimeout(sessionTimer.current);
+    sessionTimer.current = window.setTimeout(() => {
+      void api
+        .stopSession()
+        .then(() => refresh())
+        .catch((cause) => setError(describeError(cause)));
+    }, minutes * 60_000);
+  };
+
+  const submitNewSession = (): void => {
+    const value = newSessionLabel.trim();
+    void run(() => api.startSession("focus", value || undefined)).then(() => {
+      if (newSessionMinutes > 0) scheduleSessionStop(newSessionMinutes);
+      setAddSessionOpen(false);
+      setNewSessionLabel("");
+    });
+  };
+
   const toggleSilent = (): void => {
     const paused = breaks.state.pausedUntil !== null && breaks.state.pausedUntil > now;
     void run(() => api.pauseBreakReminders(paused ? null : now + 60 * 60_000));
@@ -332,7 +382,7 @@ export function Focus() {
     stopMusicEngine(musicEngine.current);
     const engine = createMusicEngine(track, musicVolume);
     if (!engine) {
-      setError("Music is not supported in this app window.");
+      setError(t("focus.musicNotSupported"));
       setMusicPlaying(false);
       return;
     }
@@ -370,18 +420,20 @@ export function Focus() {
           <div className="mb-8 flex w-full items-center justify-between lg:absolute lg:top-[-4.5rem]">
             <div className="flex items-center gap-2 text-sm font-semibold text-fg-strong">
               <span className="flex size-7 items-center justify-center rounded-lg bg-accent-soft text-accent">
-                <Headphones className="size-4" />
+                <Headphones className="size-4" aria-hidden="true" />
               </span>
-              Focus
+              <h1 className="text-sm font-semibold text-fg-strong text-pretty">
+                {t("focus.title")}
+              </h1>
             </div>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={toggleSilent} disabled={busy}>
-                <BellOff />
-                Silent mode
+                <BellOff aria-hidden="true" />
+                {t("focus.silentMode")}
               </Button>
-              <Button variant="outline" size="sm">
-                <Settings2 />
-                Blocker settings
+              <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+                <Settings2 aria-hidden="true" />
+                {t("focus.blockerSettings")}
               </Button>
             </div>
           </div>
@@ -404,14 +456,21 @@ export function Focus() {
                       ? t("focus.breakInProgress")
                       : t("focus.readyToFocus")}
                 </span>
-                <Pencil className="mt-4 size-4 text-fg-faint" />
+                <Pencil className="mt-4 size-4 text-fg-faint" aria-hidden="true" />
               </div>
             </div>
           </div>
 
           <div className="mt-7 flex items-center gap-3">
-            <Button variant="outline" size="icon-lg" aria-label={t("focus.blockDistractions")}>
-              <ShieldCheck />
+            <Button
+              variant={snapshot.captureEnabled ? "outline" : "secondary"}
+              size="icon-lg"
+              aria-label={t("focus.blockDistractions")}
+              aria-pressed={!snapshot.captureEnabled}
+              disabled={busy}
+              onClick={toggleCapture}
+            >
+              <ShieldCheck aria-hidden="true" />
             </Button>
             <Button
               variant="outline"
@@ -420,7 +479,7 @@ export function Focus() {
               disabled={busy || Boolean(current)}
               onClick={() => void run(() => api.startSession("break", "Break"))}
             >
-              <CirclePause />
+              <CirclePause aria-hidden="true" />
             </Button>
             <Button
               size="icon-lg"
@@ -435,10 +494,19 @@ export function Focus() {
               }
               disabled={busy}
             >
-              {current ? <Square className="fill-current" /> : <Play className="fill-current" />}
+              {current ? (
+                <Square className="fill-current" aria-hidden="true" />
+              ) : (
+                <Play className="fill-current" aria-hidden="true" />
+              )}
             </Button>
-            <Button variant="outline" size="icon-lg" aria-label={t("focus.addSession")}>
-              <Plus />
+            <Button
+              variant="outline"
+              size="icon-lg"
+              aria-label={t("focus.addSession")}
+              onClick={() => setAddSessionOpen(true)}
+            >
+              <Plus aria-hidden="true" />
             </Button>
             <Button
               variant={musicOpen ? "secondary" : "outline"}
@@ -447,7 +515,7 @@ export function Focus() {
               aria-expanded={musicOpen}
               onClick={() => setMusicOpen((open) => !open)}
             >
-              <Music2 />
+              <Music2 aria-hidden="true" />
             </Button>
           </div>
 
@@ -455,7 +523,7 @@ export function Focus() {
             <div className="flex items-center gap-3 px-3 py-3">
               <div className="relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-accent-soft text-accent">
                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,var(--accent),transparent_50%)] opacity-50" />
-                <Music2 className="relative size-5" />
+                <Music2 className="relative size-5" aria-hidden="true" />
               </div>
               <button
                 className="min-w-0 flex-1 text-left"
@@ -472,9 +540,9 @@ export function Focus() {
                 onClick={toggleMusic}
               >
                 {musicPlaying ? (
-                  <Pause className="fill-current" />
+                  <Pause className="fill-current" aria-hidden="true" />
                 ) : (
-                  <Play className="fill-current" />
+                  <Play className="fill-current" aria-hidden="true" />
                 )}
               </Button>
               <Button
@@ -483,14 +551,17 @@ export function Focus() {
                 aria-label={t("focus.togglePlaylist")}
                 onClick={() => setMusicOpen((open) => !open)}
               >
-                <ChevronDown className={`transition-transform ${musicOpen ? "rotate-180" : ""}`} />
+                <ChevronDown
+                  className={`transition-transform motion-reduce:transition-none ${musicOpen ? "rotate-180" : ""}`}
+                  aria-hidden="true"
+                />
               </Button>
             </div>
             <div className="px-3 pb-3">
               <div className="relative h-1 overflow-hidden rounded-full bg-surface-strong">
                 <div
-                  className="absolute inset-y-0 left-0 rounded-full bg-accent transition-[width]"
-                  style={{ width: `${musicProgress}%` }}
+                  className="absolute inset-y-0 left-0 w-full origin-left rounded-full bg-accent transition-transform motion-reduce:transition-none"
+                  style={{ transform: `scaleX(${musicProgress / 100})` }}
                 />
               </div>
               <div className="mt-1 flex justify-between text-[10px] tabular-nums text-fg-faint">
@@ -498,225 +569,390 @@ export function Focus() {
                 <span>25:00</span>
               </div>
             </div>
-            {musicOpen && (
-              <div className="border-t border-line bg-surface-strong/40 px-3 py-3">
-                <div className="mb-2 flex items-center justify-between text-xs font-medium text-fg-muted">
-                  <span className="flex items-center gap-1.5">
-                    <ListMusic className="size-3.5" /> Focus mix
-                  </span>
-                  <span className="flex items-center gap-2">
+            <AnimatePresence initial={false}>
+              {musicOpen && (
+                <motion.div
+                  key="playlist"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                  style={{ overflow: "hidden" }}
+                  className="border-t border-line bg-surface-strong/40 px-3 py-3"
+                >
+                  <div className="mb-2 flex items-center justify-between text-xs font-medium text-fg-muted">
+                    <span className="flex items-center gap-1.5">
+                      <ListMusic className="size-3.5" aria-hidden="true" /> {t("focus.focusMix")}
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={importMusic}
+                        aria-label={t("focus.importLocalAudio")}
+                      >
+                        <Plus aria-hidden="true" />
+                      </Button>
+                      <span>{t("focus.tracksCount", { count: musicTracks.length })}</span>
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    {musicTracks.length === 0 && (
+                      <p className="py-2 text-xs text-fg-muted">{t("focus.noTracks")}</p>
+                    )}
+                    {musicTracks.map((track, index) => {
+                      const selected = track.id === musicTrackId;
+                      return (
+                        <button
+                          key={track.id}
+                          className={`flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${selected ? "bg-accent-soft text-fg-strong" : "text-fg-muted hover:bg-surface hover:text-fg"}`}
+                          onClick={() => {
+                            setMusicTrackId(track.id);
+                            setMusicProgress(0);
+                            startMusic(track.id);
+                          }}
+                        >
+                          <span
+                            className={`flex size-6 items-center justify-center rounded-md text-[10px] font-semibold ${selected ? "bg-accent text-accent-fg" : "bg-surface text-fg-faint"}`}
+                          >
+                            {selected && musicPlaying ? (
+                              <Volume2 className="size-3" aria-hidden="true" />
+                            ) : (
+                              String(index + 1).padStart(2, "0")
+                            )}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs font-medium">
+                              {track.title}
+                            </span>
+                            <span className="block truncate text-[10px] text-fg-faint">
+                              {track.description}
+                            </span>
+                          </span>
+                          {selected && (
+                            <span className="text-[10px] text-accent">{t("focus.active")}</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
                     <Button
                       variant="ghost"
                       size="icon-xs"
-                      onClick={importMusic}
-                      aria-label="Import local audio"
+                      aria-label={t("focus.previousTrack")}
+                      onClick={() => {
+                        const index = musicTracks.findIndex((track) => track.id === musicTrackId);
+                        const track =
+                          musicTracks[(index - 1 + musicTracks.length) % musicTracks.length];
+                        if (!track) return;
+                        setMusicTrackId(track.id);
+                        setMusicProgress(0);
+                        startMusic(track.id);
+                      }}
                     >
-                      <Plus />
+                      <SkipBack aria-hidden="true" />
                     </Button>
-                    <span>{musicTracks.length} tracks</span>
-                  </span>
-                </div>
-                <div className="space-y-1">
-                  {musicTracks.map((track, index) => {
-                    const selected = track.id === musicTrackId;
-                    return (
-                      <button
-                        key={track.id}
-                        className={`flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors ${selected ? "bg-accent-soft text-fg-strong" : "text-fg-muted hover:bg-surface hover:text-fg"}`}
-                        onClick={() => {
-                          setMusicTrackId(track.id);
-                          setMusicProgress(0);
-                          startMusic(track.id);
-                        }}
-                      >
-                        <span
-                          className={`flex size-6 items-center justify-center rounded-md text-[10px] font-semibold ${selected ? "bg-accent text-accent-fg" : "bg-surface text-fg-faint"}`}
-                        >
-                          {selected && musicPlaying ? (
-                            <Volume2 className="size-3" />
-                          ) : (
-                            String(index + 1).padStart(2, "0")
-                          )}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-xs font-medium">{track.title}</span>
-                          <span className="block truncate text-[10px] text-fg-faint">
-                            {track.description}
-                          </span>
-                        </span>
-                        {selected && <span className="text-[10px] text-accent">active</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={t("focus.previousTrack")}
-                    onClick={() => {
-                      const index = musicTracks.findIndex((track) => track.id === musicTrackId);
-                      const track =
-                        musicTracks[(index - 1 + musicTracks.length) % musicTracks.length];
-                      if (!track) return;
-                      setMusicTrackId(track.id);
-                      setMusicProgress(0);
-                      startMusic(track.id);
-                    }}
-                  >
-                    <SkipBack />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={t("focus.nextTrack")}
-                    onClick={() => {
-                      const index = musicTracks.findIndex((track) => track.id === musicTrackId);
-                      const track = musicTracks[(index + 1) % musicTracks.length];
-                      if (!track) return;
-                      setMusicTrackId(track.id);
-                      setMusicProgress(0);
-                      startMusic(track.id);
-                    }}
-                  >
-                    <SkipForward />
-                  </Button>
-                  <Volume2 className="ml-auto size-3.5 text-fg-muted" />
-                  <input
-                    className="h-1 w-20 accent-[var(--accent)]"
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={musicVolume}
-                    onChange={(event) => setMusicVolume(Number(event.target.value))}
-                    aria-label={t("focus.musicVolume")}
-                  />
-                  <span className="w-7 text-right text-[10px] tabular-nums text-fg-faint">
-                    {musicVolume}
-                  </span>
-                </div>
-              </div>
-            )}
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label={t("focus.nextTrack")}
+                      onClick={() => {
+                        const index = musicTracks.findIndex((track) => track.id === musicTrackId);
+                        const track = musicTracks[(index + 1) % musicTracks.length];
+                        if (!track) return;
+                        setMusicTrackId(track.id);
+                        setMusicProgress(0);
+                        startMusic(track.id);
+                      }}
+                    >
+                      <SkipForward aria-hidden="true" />
+                    </Button>
+                    <Volume2 className="ml-auto size-3.5 text-fg-muted" aria-hidden="true" />
+                    <input
+                      className="h-1 w-20 accent-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={musicVolume}
+                      onChange={(event) => setMusicVolume(Number(event.target.value))}
+                      aria-label={t("focus.musicVolume")}
+                    />
+                    <span className="w-7 text-right text-[10px] tabular-nums text-fg-faint">
+                      {musicVolume}
+                    </span>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </Card>
 
-          {error && (
-            <p className="mt-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p>
-          )}
-          {!current && (
-            <div className="mt-4 flex w-full max-w-md gap-2">
-              <Input
-                value={label}
-                onChange={(event) => setLabel(event.target.value)}
-                placeholder={t("focus.whatWorking")}
-                aria-label={t("focus.topic")}
-              />
-              <Button onClick={startFocus} disabled={busy}>
-                Start
-              </Button>
-            </div>
-          )}
+          <AnimatePresence>
+            {error && (
+              <motion.p
+                key="error"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                aria-live="polite"
+                className="mt-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger"
+                role="alert"
+              >
+                {error}
+              </motion.p>
+            )}
+          </AnimatePresence>
+          <AnimatePresence>
+            {!current && (
+              <motion.div
+                key="start-row"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                className="mt-4 flex w-full max-w-md gap-2"
+              >
+                <Input
+                  value={label}
+                  onChange={(event) => setLabel(event.target.value)}
+                  placeholder={t("focus.whatWorking")}
+                  aria-label={t("focus.topic")}
+                  name="focus-label"
+                  autoComplete="off"
+                />
+                <Button onClick={startFocus} disabled={busy}>
+                  {t("focus.start")}
+                </Button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </section>
 
       <aside className="hidden w-[375px] shrink-0 overflow-y-auto border-l border-line bg-panel xl:block">
-        <div className="flex border-b border-line px-4 pt-4 text-sm">
-          <button className="border-b-2 border-accent px-1 pb-3 font-medium text-fg-strong">
-            Overview
-          </button>
-          <button className="px-4 pb-3 text-fg-muted">{t("focus.timeline")}</button>
-          <button className="px-1 pb-3 text-fg-muted">{t("focus.currentSession")}</button>
-          <span className="ml-auto px-1 pb-3 text-fg-muted">»</span>
-        </div>
-        <div className="border-b border-line px-4 py-4">
-          <div className="flex items-center">
-            <Button
-              variant="outline"
-              size="icon-sm"
-              onClick={() => setSelectedDay((day) => day - DAY_MS)}
-              aria-label={t("focus.previousDay")}
-            >
-              <ChevronLeft />
-            </Button>
-            <Button
-              variant="outline"
-              size="icon-sm"
-              className="rounded-l-none border-l-0"
-              onClick={() => setSelectedDay((day) => Math.min(todayStart, day + DAY_MS))}
-              aria-label={t("focus.nextDay")}
-            >
-              <ChevronRight />
-            </Button>
-            <div className="ml-2 flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-xs text-fg-strong">
-              <CalendarDays className="size-3.5 text-fg-muted" />
-              {selectedDate}
+        <Tabs defaultValue="overview" className="flex flex-col">
+          <div className="border-b border-line px-4 pt-4">
+            <TabsList variant="line" className="w-full justify-start">
+              <TabsTrigger value="overview" className="px-2">
+                {t("focus.overview")}
+              </TabsTrigger>
+              <TabsTrigger value="timeline" className="px-2">
+                {t("focus.timeline")}
+              </TabsTrigger>
+              <TabsTrigger value="session" className="px-2">
+                {t("focus.currentSession")}
+              </TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="overview" className="space-y-0">
+            <div className="border-b border-line px-4 py-5">
+              <p className="text-sm font-semibold text-fg-muted">{t("focus.todayFocus")}</p>
+              <p className="mt-2 text-3xl font-semibold tracking-tight text-fg-strong tabular-nums">
+                {formatHours(Math.round(todayFocusMs / 60_000))}
+              </p>
+              <p className="mt-1 text-xs text-fg-muted">
+                {t("focus.focusSessionsBreaks", {
+                  sessions: completedFocus.length,
+                  minutes: Math.round(todayBreakMs / 60_000),
+                })}
+              </p>
             </div>
-          </div>
-        </div>
-        <div className="border-b border-line px-4 py-5">
-          <p className="text-sm font-semibold text-fg-muted">Today's focus</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-fg-strong">
-            {formatHours(Math.round(todayFocusMs / 60_000))}
-          </p>
-          <p className="mt-1 text-xs text-fg-muted">
-            {completedFocus.length} focus sessions · {Math.round(todayBreakMs / 60_000)} min of
-            breaks
-          </p>
-        </div>
-        <div className="border-b border-line px-4 py-5">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-fg-muted">{t("focus.thisWeek")}</p>
-            <span className="text-xs text-fg-muted">{formatHours(Math.round(weekTotal))}</span>
-          </div>
-          <div className="mt-5 flex h-32 items-end justify-between gap-2 border-b border-line-soft bg-[linear-gradient(to_bottom,transparent_24%,var(--line-soft)_25%,transparent_26%,transparent_49%,var(--line-soft)_50%,transparent_51%,transparent_74%,var(--line-soft)_75%,transparent_76%)] px-2">
-            {week.map((day) => (
-              <div
-                key={day.label}
-                className="flex h-full flex-1 flex-col items-center justify-end gap-2"
-              >
-                <div
-                  className="w-full max-w-5 rounded-t bg-accent"
-                  style={{
-                    height: `${Math.max(day.minutes > 0 ? 5 : 0, (day.minutes / maxWeekMinutes) * 100)}%`,
-                  }}
-                />
-                <span className="text-[11px] text-fg-muted">{day.label}</span>
+            <div className="border-b border-line px-4 py-5">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-fg-muted">{t("focus.thisWeek")}</p>
+                <span className="text-xs text-fg-muted tabular-nums">
+                  {formatHours(Math.round(weekTotal))}
+                </span>
               </div>
-            ))}
-          </div>
-          <div className="mt-4 flex items-center justify-between text-xs text-fg-muted">
-            <span>{t("focus.avgSession")}</span>
-            <span className="font-medium text-fg-strong">
-              {completedFocus.length
-                ? formatHours(Math.round(todayFocusMs / 60_000 / completedFocus.length))
-                : "0 min"}
-            </span>
-          </div>
-        </div>
-        <div className="border-b border-line px-4 py-5">
-          <p className="text-sm font-semibold text-fg-muted">{t("focus.topDistractions")}</p>
-          <p className="mt-3 text-xs text-fg-muted">No distractions.</p>
-        </div>
-        <div className="px-4 py-5">
-          <p className="text-sm font-semibold text-fg-muted">{t("focus.sessions")}</p>
-          <div className="mt-3 divide-y divide-line">
-            {selectedSegments.length === 0 ? (
-              <p className="py-2 text-xs text-fg-muted">No sessions on this day.</p>
-            ) : (
-              selectedSegments.map((segment) => (
-                <div
-                  key={segment.id}
-                  className="flex items-center justify-between gap-3 py-2 text-xs"
+              <div className="mt-5 flex h-32 items-end justify-between gap-2 border-b border-line-soft bg-[linear-gradient(to_bottom,transparent_24%,var(--line-soft)_25%,transparent_26%,transparent_49%,var(--line-soft)_50%,transparent_51%,transparent_74%,var(--line-soft)_75%,transparent_76%)] px-2">
+                {week.map((day) => (
+                  <div
+                    key={day.label}
+                    className="flex h-full flex-1 flex-col items-center justify-end gap-2"
+                  >
+                    <div
+                      className="w-full max-w-5 rounded-t bg-accent motion-reduce:transition-none"
+                      style={{
+                        height: `${Math.max(day.minutes > 0 ? 5 : 0, (day.minutes / maxWeekMinutes) * 100)}%`,
+                      }}
+                    />
+                    <span className="text-[11px] text-fg-muted">{day.label}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex items-center justify-between text-xs text-fg-muted">
+                <span>{t("focus.avgSession")}</span>
+                <span className="font-medium text-fg-strong tabular-nums">
+                  {completedFocus.length
+                    ? formatHours(Math.round(todayFocusMs / 60_000 / completedFocus.length))
+                    : "0 min"}
+                </span>
+              </div>
+            </div>
+            <div className="border-b border-line px-4 py-5">
+              <p className="text-sm font-semibold text-fg-muted">{t("focus.topDistractions")}</p>
+              <p className="mt-3 text-xs text-fg-muted">{t("focus.noDistractions")}</p>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="timeline" className="space-y-0">
+            <div className="border-b border-line px-4 py-4">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  onClick={() => setSelectedDay((day) => day - DAY_MS)}
+                  aria-label={t("focus.previousDay")}
                 >
-                  <span className="truncate text-fg">{segment.label ?? segment.title}</span>
-                  <span className="shrink-0 text-fg-muted">
-                    {timeLabel(segment.startedAt)} · {formatDuration(elapsed(segment, now))}
-                  </span>
+                  <ChevronLeft aria-hidden="true" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  onClick={() => setSelectedDay((day) => Math.min(todayStart, day + DAY_MS))}
+                  aria-label={t("focus.nextDay")}
+                >
+                  <ChevronRight aria-hidden="true" />
+                </Button>
+                <div className="ml-2 flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-xs text-fg-strong">
+                  <CalendarDays className="size-3.5 text-fg-muted" aria-hidden="true" />
+                  {selectedDate}
                 </div>
-              ))
-            )}
-          </div>
-        </div>
+              </div>
+            </div>
+            <div className="px-4 py-5">
+              <p className="text-sm font-semibold text-fg-muted">{t("focus.sessions")}</p>
+              <div className="mt-3 divide-y divide-line">
+                {selectedSegments.length === 0 ? (
+                  <p className="py-2 text-xs text-fg-muted">{t("focus.noSessionsOnDay")}</p>
+                ) : (
+                  selectedSegments.map((segment) => (
+                    <div
+                      key={segment.id}
+                      className="flex items-center justify-between gap-3 py-2 text-xs"
+                    >
+                      <span className="truncate text-fg">{segment.label ?? segment.title}</span>
+                      <span className="shrink-0 text-fg-muted tabular-nums">
+                        {timeLabel(segment.startedAt)} · {formatDuration(elapsed(segment, now))}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="session" className="space-y-0">
+            <div className="px-4 py-5">
+              <p className="text-sm font-semibold text-fg-muted">{t("focus.currentSession")}</p>
+              {current ? (
+                <div className="mt-3 space-y-2">
+                  <p className="text-base font-medium text-fg-strong">
+                    {current.label ?? current.title ?? t("focus.focus")}
+                  </p>
+                  <p className="font-mono text-2xl tabular-nums text-accent">
+                    {formatDuration(currentDuration)}
+                  </p>
+                  <p className="text-xs text-fg-muted">
+                    {active
+                      ? t("focus.timeElapsed")
+                      : onBreak
+                        ? t("focus.breakInProgress")
+                        : t("focus.readyToFocus")}
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-3 text-xs text-fg-muted">{t("focus.noActiveSession")}</p>
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
       </aside>
+
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("focus.blockerSettings")}</DialogTitle>
+            <DialogDescription>{t("focus.blockerSettingsDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-3 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-fg">{t("focus.blockDistractions")}</p>
+                <p className="text-xs text-fg-muted">
+                  {snapshot.captureEnabled ? t("focus.captureOn") : t("focus.captureOff")}
+                </p>
+              </div>
+              <Button
+                variant={snapshot.captureEnabled ? "outline" : "secondary"}
+                size="sm"
+                disabled={busy}
+                onClick={toggleCapture}
+              >
+                {snapshot.captureEnabled ? t("focus.pauseCapture") : t("focus.resumeCapture")}
+              </Button>
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-3 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-fg">{t("focus.silentMode")}</p>
+                <p className="text-xs text-fg-muted">
+                  {breaks.state.pausedUntil !== null && breaks.state.pausedUntil > now
+                    ? t("focus.remindersSilenced")
+                    : t("focus.remindersActive")}
+                </p>
+              </div>
+              <Button variant="outline" size="sm" disabled={busy} onClick={toggleSilent}>
+                {breaks.state.pausedUntil !== null && breaks.state.pausedUntil > now
+                  ? t("focus.resumeReminders")
+                  : t("focus.silence1Hour")}
+              </Button>
+            </div>
+            <Button variant="outline" size="sm" onClick={openBlockerSettings}>
+              <Settings2 aria-hidden="true" />
+              {t("focus.openOsNotificationSettings")}
+            </Button>
+          </div>
+          <DialogFooter showCloseButton />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={addSessionOpen} onOpenChange={setAddSessionOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("focus.addFocusSession")}</DialogTitle>
+            <DialogDescription>{t("focus.addFocusSessionDescription")}</DialogDescription>
+          </DialogHeader>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="new-session-label">{t("focus.whatWorking")}</FieldLabel>
+              <Input
+                id="new-session-label"
+                value={newSessionLabel}
+                onChange={(event) => setNewSessionLabel(event.target.value)}
+                placeholder={t("focus.whatWorking")}
+                autoComplete="off"
+                name="new-session-label"
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="new-session-minutes">{t("focus.durationMinutes")}</FieldLabel>
+              <Input
+                id="new-session-minutes"
+                type="number"
+                min={1}
+                max={240}
+                value={newSessionMinutes}
+                onChange={(event) => setNewSessionMinutes(Number(event.target.value))}
+              />
+            </Field>
+          </FieldGroup>
+          <DialogFooter>
+            <Button onClick={submitNewSession} disabled={busy || !newSessionLabel.trim()}>
+              {t("focus.startSession")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }
